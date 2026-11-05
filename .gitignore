@@ -1,3 +1,7 @@
+# Carpetas a ignorar 
+pruebas
+
+# Archivos a ignorar
 eventos.csv
 LEEME.txt
 *.pdf
