@@ -49,7 +49,7 @@ registrar <- function(df, paso, nota = "") {
 }
 
 eventos <- eventos %>%
-  filter(event_type %in% c("Hail", "Thundereventos Wind"),
+  filter(event_type %in% c("Hail", "Thunderstorm Wind"),
          state %in% c("TEXAS", "OKLAHOMA", "KANSAS"),
          year >= 2018, year <= 2023) %>%
   registrar("Recorte de tipo, estado y años", "debería coincidir con el paquete")
@@ -103,15 +103,15 @@ summary(eventos$dur_min)
 # --- 5. Magnitud: separar por tipo, no mezclar unidades -----------------------
 eventos <- eventos %>%
   mutate(mag_hail_in  = if_else(event_type == "Hail", magnitude, NA_real_), #SEPARACION DE VARIABLES POR UNIDAD METRICA
-         mag_wind_kt  = if_else(event_type == "Thundereventos Wind", magnitude, NA_real_),
+         mag_wind_kt  = if_else(event_type == "Thunderstorm Wind", magnitude, NA_real_),
          mag_ausente  = is.na(magnitude),
          mag_medida   = magnitude_type %in% c("MG", "MS"))  # medida vs estimada
 
 summary(eventos$mag_hail_in); summary(eventos$mag_wind_kt)  # buscar imposibles (hail > 6 in, viento > 150 kt)
 eventos <- eventos %>%
   mutate(mag_medida = case_when(
-    event_type == "Thundereventos Wind" & magnitude_type %in% c("MG", "MS") ~ TRUE,
-    event_type == "Thundereventos Wind"                                       ~ FALSE,
+    event_type == "Thunderstorm Wind" & magnitude_type %in% c("MG", "MS") ~ TRUE,
+    event_type == "Thunderstorm Wind"                                       ~ FALSE,
     TRUE                                                                    ~ NA))  # granizo: no aplica 
 table(eventos$event_type, eventos$mag_medida, useNA = "ifany")
 table(eventos$event_type, eventos$magnitude_type, useNA = "ifany")
@@ -138,5 +138,51 @@ base_entrenamiento <- conjunto_entrenamiento %>%
 base_entrenamiento_sin_respuesta <- base_entrenamiento %>% 
   select(-damage_property)
 
-print(unique(eventos$event_type))
 
+################################################################################
+# SEMILLA Y PARTICIONES COMUNES
+################################################################################
+
+# --- Semilla global ------------------------------------------------------------
+SEMILLA <- 3407
+set.seed(SEMILLA)
+
+# --- Ventanas de validación (expanding window) ---------------------------------
+# Cada ventana entrena con los años pasados y valida en el año siguiente.
+def_ventanas <- tibble::tribble(
+  ~nombre,                          ~anios_train,       ~anio_valid,
+  "V1: Entrenamiento 2018 -> Validacion 2019",      2018:2018, 2019L,
+  "V2: Entrenamiento 2018-2019 -> Validacion 2020", 2018:2019, 2020L,
+  "V3: Entrenamiento 2018-2020 -> Validacion 2021", 2018:2020, 2021L
+)
+
+ventanas <- lapply(seq_len(nrow(def_ventanas)), function(i) {
+  list(
+    nombre = def_ventanas$nombre[i],
+    train  = base_entrenamiento %>% filter(year %in% def_ventanas$anios_train[[i]]),
+    valid  = base_entrenamiento %>% filter(year == def_ventanas$anio_valid[i])
+  )
+})
+names(ventanas) <- c("V1", "V2", "V3")
+
+# Control: ningun año de validacion puede estar en entrenamiento, y 2022+ no aparece
+stopifnot(
+  all(vapply(ventanas, function(w) max(w$train$year) < min(w$valid$year), logical(1))),
+  all(vapply(ventanas, function(w) all(w$valid$year < 2022), logical(1))),
+  all(base_prueba$year >= 2022),
+  all(vapply(ventanas, function(w) nrow(w$train) > 0 && nrow(w$valid) > 0, logical(1)))
+)
+
+# --- Resumen impreso al hacer source() -----------------------------------------
+cat("\n==================== CONFIGURACION COMUN ====================\n")
+cat("Semilla utilizada:", SEMILLA, "\n\n")
+cat("Conjuntos de entrenamiento / validacion:\n")
+for (w in ventanas) {
+  cat(sprintf("  %-50s  train = %5d filas | valid = %5d filas\n",
+              w$nombre, nrow(w$train), nrow(w$valid)))
+}
+cat(sprintf("\nConjunto de entrenamiento completo (2018-2021): %d filas\n",
+            nrow(base_entrenamiento)))
+cat(sprintf("Conjunto de prueba (2022-2023) reservado, NO TOCAR: %d filas\n",
+            nrow(base_prueba)))
+cat("==============================================================\n\n")
