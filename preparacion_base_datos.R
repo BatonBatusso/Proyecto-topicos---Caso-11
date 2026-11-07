@@ -145,6 +145,11 @@ eventos <- eventos %>%
     ))
   )
 
+# --- 5.1. Variables Espaciales ------------------------------------------------
+eventos <- eventos %>%
+  mutate(
+    dist_km = sqrt((end_lon - begin_lon)^2 + (end_lat - begin_lat)^2) * 111 # Aprox km
+  )
 
 
 eventos_sin_na <- eventos %>% filter(!is.na(damage_property))
@@ -170,11 +175,7 @@ base_entrenamiento <- conjunto_entrenamiento %>%
 base_entrenamiento_sin_respuesta <- base_entrenamiento %>% 
   select(-damage_property)
 
-# --- 5.1. Variables Espaciales ------------------------------------------------
-eventos <- eventos %>%
-  mutate(
-    dist_km = sqrt((end_lon - begin_lon)^2 + (end_lat - begin_lat)^2) * 111 # Aprox km
-  )
+
 
 
 ################################################################################
