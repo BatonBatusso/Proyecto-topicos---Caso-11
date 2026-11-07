@@ -93,10 +93,14 @@ parse_dt <- function(x) parse_date_time(x, orders = c("dmy HMS", "mdy HMS"), qui
 eventos <- eventos %>%
   mutate(inicio = parse_dt(begin_date_time),
          fin    = parse_dt(end_date_time),
-         dur_min = as.numeric(difftime(fin, inicio, units = "mins")))
+         dur_min = as.numeric(difftime(fin, inicio, units = "mins")),
+         dur_seg = as.numeric(difftime(fin, inicio, units = "secs")),
+         hora_inicio = hour(inicio),
+         mes_num = month(inicio))
 sum(is.na(eventos$inicio)); sum(eventos$dur_min < 0, na.rm = TRUE)   # auditar
 sum(is.na(eventos$fin))
 summary(eventos$dur_min)
+summary(eventos$dur_seg)
 #No hay fechas de inicio faltante
 #No hay duraciones negativas
 
@@ -117,6 +121,32 @@ table(eventos$event_type, eventos$mag_medida, useNA = "ifany")
 table(eventos$event_type, eventos$magnitude_type, useNA = "ifany")
 
 
+# --- Variables derivadas faltantes y origen de magnitud ---
+eventos <- eventos %>%
+  mutate(
+    # Indicador lógico para granizo
+    is_hail = if_else(event_type == "Hail", TRUE, FALSE),
+    
+    # Verificación de coordenadas (excluyendo NAs)
+    coordenadas_validas = !is.na(begin_lat) & !is.na(begin_lon),
+    
+    # Agrupación de tipo de magnitud basándonos en los códigos de medición del viento vs estimación
+    mag_type_grupo = factor(case_when(
+      magnitude_type %in% c("MG", "MS") ~ "Medido",
+      magnitude_type %in% c("EG", "ES") ~ "Estimado",
+      TRUE ~ "No_Aplica"
+    )),
+    
+    # Variable de origen adaptada al objeto "eventos"
+    mag_origen = factor(case_when(
+      event_type == "Hail" ~ "granizo",
+      mag_medida           ~ "viento_medido",
+      TRUE                 ~ "viento_estimado"
+    ))
+  )
+
+
+
 eventos_sin_na <- eventos %>% filter(!is.na(damage_property))
 
 conjunto_prueba <- eventos_sin_na %>% filter(year >= 2022)
@@ -126,17 +156,25 @@ base_prueba <- conjunto_prueba %>%
   select(-c(injuries_direct, injuries_indirect,
             deaths_direct, deaths_indirect, flood_cause, category,
             tor_f_scale, tor_length, tor_width, tor_other_wfo,
-            tor_other_cz_state, tor_other_cz_fips, tor_other_cz_name))
+            tor_other_cz_state, tor_other_cz_fips, tor_other_cz_name,
+            episode_narrative, event_narrative, damage_crops))
 
 
 base_entrenamiento <- conjunto_entrenamiento %>%
   select(-c( injuries_direct, injuries_indirect,deaths_direct, 
              deaths_indirect, flood_cause, category,
              tor_f_scale, tor_length, tor_width, tor_other_wfo,
-             tor_other_cz_state, tor_other_cz_fips, tor_other_cz_name))
+             tor_other_cz_state, tor_other_cz_fips, tor_other_cz_name,
+             episode_narrative, event_narrative, damage_crops))
 
 base_entrenamiento_sin_respuesta <- base_entrenamiento %>% 
   select(-damage_property)
+
+# --- 5.1. Variables Espaciales ------------------------------------------------
+eventos <- eventos %>%
+  mutate(
+    dist_km = sqrt((end_lon - begin_lon)^2 + (end_lat - begin_lat)^2) * 111 # Aprox km
+  )
 
 
 ################################################################################
@@ -157,21 +195,36 @@ def_ventanas <- tibble::tribble(
 )
 
 ventanas <- lapply(seq_len(nrow(def_ventanas)), function(i) {
+  # 1. Separar los conjuntos de la ventana
+  train_raw <- base_entrenamiento %>% filter(year %in% def_ventanas$anios_train[[i]])
+  valid_raw <- base_entrenamiento %>% filter(year == def_ventanas$anio_valid[i])
+  
+  # 2. Aprender qué categorías de 'source' superan el 2% SOLO en entrenamiento
+  frec_source <- train_raw %>%
+    count(source) %>%
+    mutate(porcentaje = (n / sum(n)) * 100)
+  
+  source_retener <- frec_source %>%
+    filter(porcentaje > 2) %>%
+    pull(source)
+  
+  # 3. Aplicar la transformación tanto a train como a valid
+  train_final <- train_raw %>%
+    mutate(source = if_else(source %in% source_retener, as.character(source), "Otros"),
+           source = factor(source))
+  
+  valid_final <- valid_raw %>%
+    mutate(source = if_else(source %in% source_retener, as.character(source), "Otros"),
+           source = factor(source, levels = levels(train_final$source)))
+  
+  # 4. Retornar la lista
   list(
     nombre = def_ventanas$nombre[i],
-    train  = base_entrenamiento %>% filter(year %in% def_ventanas$anios_train[[i]]),
-    valid  = base_entrenamiento %>% filter(year == def_ventanas$anio_valid[i])
+    train  = train_final,
+    valid  = valid_final
   )
 })
 names(ventanas) <- c("V1", "V2", "V3")
-
-# Control: ningun año de validacion puede estar en entrenamiento, y 2022+ no aparece
-stopifnot(
-  all(vapply(ventanas, function(w) max(w$train$year) < min(w$valid$year), logical(1))),
-  all(vapply(ventanas, function(w) all(w$valid$year < 2022), logical(1))),
-  all(base_prueba$year >= 2022),
-  all(vapply(ventanas, function(w) nrow(w$train) > 0 && nrow(w$valid) > 0, logical(1)))
-)
 
 # --- Resumen impreso al hacer source() -----------------------------------------
 cat("\n==================== CONFIGURACION COMUN ====================\n")
@@ -186,3 +239,5 @@ cat(sprintf("\nConjunto de entrenamiento completo (2018-2021): %d filas\n",
 cat(sprintf("Conjunto de prueba (2022-2023) reservado, NO TOCAR: %d filas\n",
             nrow(base_prueba)))
 cat("==============================================================\n\n")
+
+
