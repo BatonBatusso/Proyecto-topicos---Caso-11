@@ -95,7 +95,8 @@ eventos <- eventos %>%
          fin    = parse_dt(end_date_time),
          dur_min = as.numeric(difftime(fin, inicio, units = "mins")),
          dur_seg = as.numeric(difftime(fin, inicio, units = "secs")),
-         hora_inicio = hour(inicio))
+         hora_inicio = hour(inicio),
+         mes_num = month(inicio))
 sum(is.na(eventos$inicio)); sum(eventos$dur_min < 0, na.rm = TRUE)   # auditar
 sum(is.na(eventos$fin))
 summary(eventos$dur_min)
@@ -118,6 +119,32 @@ eventos <- eventos %>%
     TRUE                                                                    ~ NA))  # granizo: no aplica 
 table(eventos$event_type, eventos$mag_medida, useNA = "ifany")
 table(eventos$event_type, eventos$magnitude_type, useNA = "ifany")
+
+
+# --- Variables derivadas faltantes y origen de magnitud ---
+eventos <- eventos %>%
+  mutate(
+    # Indicador lógico para granizo
+    is_hail = if_else(event_type == "Hail", TRUE, FALSE),
+    
+    # Verificación de coordenadas (excluyendo NAs)
+    coordenadas_validas = !is.na(begin_lat) & !is.na(begin_lon),
+    
+    # Agrupación de tipo de magnitud basándonos en los códigos de medición del viento vs estimación
+    mag_type_grupo = factor(case_when(
+      magnitude_type %in% c("MG", "MS") ~ "Medido",
+      magnitude_type %in% c("EG", "ES") ~ "Estimado",
+      TRUE ~ "No_Aplica"
+    )),
+    
+    # Variable de origen adaptada al objeto "eventos"
+    mag_origen = factor(case_when(
+      event_type == "Hail" ~ "granizo",
+      mag_medida           ~ "viento_medido",
+      TRUE                 ~ "viento_estimado"
+    ))
+  )
+
 
 
 eventos_sin_na <- eventos %>% filter(!is.na(damage_property))
