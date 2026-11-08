@@ -1,0 +1,13 @@
+modelo,variante_respuesta,particion,alpha,n_configuraciones,tiempo_total_seg
+M1_elastic_net,original,V1,0,10,0
+M1_elastic_net,original,V1,1,10,0
+M1_elastic_net,original,V2,0,10,0
+M1_elastic_net,original,V2,1,10,0
+M1_elastic_net,original,V3,0,10,0.009999999999763531
+M1_elastic_net,original,V3,1,10,0.01999999999998181
+M1_elastic_net,log1p,V1,0,10,0
+M1_elastic_net,log1p,V1,1,10,0
+M1_elastic_net,log1p,V2,0,10,0
+M1_elastic_net,log1p,V2,1,10,0.009999999999763531
+M1_elastic_net,log1p,V3,0,10,0.01999999999998181
+M1_elastic_net,log1p,V3,1,10,0.010000000000218279
