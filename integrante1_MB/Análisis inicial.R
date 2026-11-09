@@ -5,6 +5,7 @@ library(stringr)
 library(lubridate)
 dir.create("salidas", showWarnings = FALSE)
 
+find("col_factor") 
 storm <- read_csv(
   "eventos.csv",
   col_types = cols(
@@ -26,10 +27,10 @@ storm <- read_csv(
     END_LAT = col_double(), END_LON = col_double(),
     
     # Categóricas
-    STATE = col_factor(), MONTH_NAME = col_factor(), EVENT_TYPE = col_factor(),
-    CZ_TYPE = col_factor(), WFO = col_factor(), CZ_TIMEZONE = col_factor(),
-    SOURCE = col_factor(), MAGNITUDE_TYPE = col_factor(), FLOOD_CAUSE = col_factor(),
-    TOR_F_SCALE = col_factor(), BEGIN_AZIMUTH = col_factor(), END_AZIMUTH = col_factor()
+    STATE = readr::col_factor(), MONTH_NAME = readr::col_factor(), EVENT_TYPE = readr::col_factor(),
+    CZ_TYPE = readr::col_factor(), WFO = readr::col_factor(), CZ_TIMEZONE = readr::col_factor(),
+    SOURCE = readr::col_factor(), MAGNITUDE_TYPE = readr::col_factor(), FLOOD_CAUSE = readr::col_factor(),
+    TOR_F_SCALE = readr::col_factor(), BEGIN_AZIMUTH = readr::col_factor(), END_AZIMUTH = readr::col_factor()
   )
 )
 
@@ -74,8 +75,6 @@ duplicados <- storm %>%
   select(event_id, episode_id, event_type, state, cz_name, begin_date_time, magnitude, damage_property)
 
 #INSPECCION ANTES DE ELIMINAR
-dup_cols <- setdiff(names(storm), c("event_id", "episode_id"))
-
 dups <- storm %>%
   group_by(across(all_of(dup_cols))) %>%
   mutate(grupo = cur_group_id(), n_grupo = n(), n_episodios = n_distinct(episode_id)) %>%
@@ -83,6 +82,7 @@ dups <- storm %>%
   filter(n_grupo > 1) %>%
   arrange(grupo, event_id)
 
+setdiff(names(dups),names(duplicados))
 dups %>% summarise(filas = n(), grupos = n_distinct(grupo),
   grupos_en_episodios_distintos = n_distinct(grupo[n_episodios > 1]),
   filas_con_coordenadas = sum(!is.na(begin_lat)),
@@ -160,7 +160,7 @@ storm_limpio <- storm_limpio %>%
          mag_ausente  = is.na(magnitude),
          mag_medida   = magnitude_type %in% c("MG", "MS"))  # medida vs estimada
 
-summary(storm_limpio$mag_hail_in); summary(storm_limpio$mag_wind_kt)  # buscar imposibles (hail > 6 in, viento > 150 kt)
+summary(storm_limpio$mag_hail_in); summary(storm_limpio$mag_wind_kt)  
 storm_limpio <- storm_limpio %>%
   mutate(mag_medida = case_when(
     event_type == "Thunderstorm Wind" & magnitude_type %in% c("MG", "MS") ~ TRUE,
@@ -201,7 +201,7 @@ ausentes <- storm_limpio %>%
   tidyr::pivot_longer(everything(), names_to = "variable", values_to = "prop_ausente") %>%
   arrange(desc(prop_ausente))
 
-print(ausentes, n = 70)
+print(ausentes)
 readr::write_csv(ausentes, "salidas/tabla_ausentes.csv")
 
 storm_limpio %>% summarise(
@@ -284,7 +284,8 @@ dev %>% filter(event_type == "Thunderstorm Wind") %>%
 menor50 <- dev %>% filter(event_type == "Thunderstorm Wind") %>% 
   filter(magnitude < 50)
 sum(menor50$dano_informado)
-
+sum(menor50$dano_usd>0)
+dano_cero_menor50 <- menor50 %>% filter(dano_usd==0)
 # SESGO DE SELECCIÓN, CON MAGNITUD MENORES A 50 SOLO SE REGISTRARON EVENTOS QUE 
 # SI PRODUJERON DAÑOS
 
@@ -299,7 +300,10 @@ ep_dev %>% summarise(episodios = n(),
                      todos_pos  = mean(n_pos == n))
 
 summary(lm(log1p(dano_usd) ~ factor(episode_id), data = dev))$adj.r.squared
-
+#Entre los eventos de desarrollo, pertenecer al mismo episodio explica alrededor 
+#de un tercio de la variación de log(1+daño) (R² ajustado = 0,32). Las observaciones 
+#no son independientes, por lo que las particiones mantienen unidos los episodios 
+#y la incertidumbre se calcula remuestreando episodios
 
 
 resumen_episodios <- storm_limpio %>% 
@@ -337,8 +341,6 @@ sum(resumen_episodios$prop_rep_pos == 1, na.rm = TRUE)
 
 
 ###### CUANTIFICAR CUANTO VARÍAN EVENTOS CON UN MISMO DANO_USD OTORGADO ######
-dev <- storm_limpio %>% filter(dano_informado, year <= 2021)
-
 dist_max_km <- function(lat, lon) {
   ok <- !is.na(lat) & !is.na(lon)
   lat <- lat[ok] * pi/180; lon <- lon[ok] * pi/180

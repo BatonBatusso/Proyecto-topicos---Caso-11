@@ -11,8 +11,8 @@ dir.create("resultados/figuras", recursive = TRUE, showWarnings = FALSE)
 AL_EVENTO <- "Conocida al reconstruir el evento"
 POSTERIOR <- "Posterior al evento"
 
-d <- function(variable, interpretacion, rol, disponibilidad, decision, justificacion)
-  tibble(variable, interpretacion, rol, disponibilidad, decision, justificacion)
+d <- function(variable, interpretacion, rol, disponibilidad, decision, justificacion){
+  tibble(variable, interpretacion, rol, disponibilidad, decision, justificacion)}
 
 diccionario <- bind_rows(
   d("event_id", "ID del evento (clave primaria del NWS)", "Identificador", "No aplica",
@@ -44,13 +44,13 @@ diccionario <- bind_rows(
   d(c("begin_lat", "begin_lon"), "Latitud y longitud del inicio del evento (grados)", "Predictor", AL_EVENTO,
     "Incluida", "Ubicación fina."),
   d("coord_ok", "Indicador de coordenadas dentro del rango plausible", "Auxiliar de construcción", AL_EVENTO,
-    "Incluida si varía", "Control de calidad; si es constante (todas TRUE) no aporta y se descarta."),
+    "Excluida", "Control de calidad; si es constante (todas TRUE) no aporta y se descarta."),
   d("cz_type", "Tipo de zona (condado, zona o marino)", "Predictor", AL_EVENTO,
-    "Incluida si varía", "Probablemente casi constante en el recorte; se descarta si tiene un solo nivel."),
+    "Excluida", "Probablemente casi constante en el recorte; se descarta si tiene un solo nivel."),
   d("wfo", "Oficina del NWS responsable del área", "Predictor", AL_EVENTO,
     "Incluida (a justificar)", "Aproxima la ubicación, pero también el mecanismo de reporte; evaluar sensibilidad sin esta variable."),
   d("source", "Fuente que reportó el evento", "Predictor", AL_EVENTO,
-    "Incluida (a justificar)", "Refleja cómo se reportó y no el fenómeno físico; puede asociarse a que el daño esté informado. Evaluar sensibilidad sin esta variable."),
+    "Excluida", "Refleja cómo se reportó y no el fenómeno físico; puede asociarse a que el daño esté informado. Evaluar sensibilidad sin esta variable."),
   
   d("magnitude_type", "Código de medición del viento (EG, ES, MG, MS)", "Auxiliar de construcción", AL_EVENTO,
     "Excluida", "Vacía en todo el granizo; su información queda en mag_origen."),
@@ -117,8 +117,9 @@ tabla_variables <- diccionario %>%
 tabla_variables_informe <- tabla_variables %>%
   group_by(rol, decision, justificacion) %>%
   summarise(variables = paste(variable, collapse = ", "), n = n(), .groups = "drop")
-
+write_excel_csv(diccionario, "salidas/diccionario_variables.csv")
 write_excel_csv(tabla_variables,         "salidas/tabla_variables.csv")
 write_excel_csv(tabla_variables_informe, "salidas/tabla_variables_informe.csv")
 
 tabla_variables %>% filter(decision == "Incluida si varía", n_distintos <= 1)   # variables constantes: descartar
+

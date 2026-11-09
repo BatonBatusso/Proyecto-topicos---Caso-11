@@ -66,6 +66,10 @@ duplicados <- eventos %>%
   arrange(across(all_of(dup_cols))) %>%
   select(event_id, episode_id, event_type, state, cz_name, begin_date_time, magnitude, damage_property)
 
+eventos <- eventos %>%
+  arrange(event_id) %>%
+  distinct(across(all_of(dup_cols)), .keep_all = TRUE) %>%
+  registrar("Eliminación de filas idénticas salvo ID", "se conserva el menor event_id")
 #Función Para convertir a dolares
 to_usd <- function(x) {
   x <- str_trim(toupper(x))
@@ -95,7 +99,7 @@ eventos <- eventos %>%
          fin    = parse_dt(end_date_time),
          dur_min = as.numeric(difftime(fin, inicio, units = "mins")),
          dur_seg = as.numeric(difftime(fin, inicio, units = "secs")),
-         hora_inicio = hour(inicio),
+         hora_inicio = hour(inicio) + minute(inicio) / 60,
          mes_num = month(inicio))
 sum(is.na(eventos$inicio)); sum(eventos$dur_min < 0, na.rm = TRUE)   # auditar
 sum(is.na(eventos$fin))
