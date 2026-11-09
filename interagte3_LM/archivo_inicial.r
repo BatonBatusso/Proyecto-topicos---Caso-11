@@ -107,6 +107,7 @@ ventanas_m1 <- lapply(names(ventanas), function(id_v) {
     meta_valid   = meta_valid
   )
 })
+
 names(ventanas_m1) <- names(ventanas)
 
 
@@ -140,6 +141,16 @@ for (id_v in names(ventanas_m1)) {
 
 cat("Columnas generadas en model.matrix:\n")
 print(colnames(ventanas_m1$V1$x_train))
+
+for (id_v in names(ventanas_m1)) {
+  vm <- ventanas_m1[[id_v]]
+  const <- colnames(vm$x_train)[apply(vm$x_train, 2, sd) == 0]
+  cat(sprintf("[%s] y sin NA: %s | meta alineada: %s | cols constantes: %s\n",
+              id_v,
+              !anyNA(vm$y_train_orig) && !anyNA(vm$y_valid_orig),
+              nrow(vm$meta_valid) == nrow(vm$x_valid),
+              ifelse(length(const) == 0, "ninguna", paste(const, collapse = ", "))))
+}
 
 
 # ==============================================================================
@@ -297,6 +308,49 @@ ejecutar_busqueda_m1 <- function(ventanas_m1, grilla_m1, variante = c("original"
 # 3. Ejecutar búsqueda en las dos variantes de la respuesta (Sensibilidad 1)
 res_m1_orig <- ejecutar_busqueda_m1(ventanas_m1, grilla_m1_orig, variante = "original")
 res_m1_log  <- ejecutar_busqueda_m1(ventanas_m1, grilla_m1_log,  variante = "log1p")
+
+
+# REVISION DE VALORES DE VARIABLE RESPUESTA -------------------------------
+
+# Función auxiliar para calcular el promedio del X% más alto
+promedio_top_x <- function(vector_danos, proporcion) {
+  # Calcula el cuantil de corte (ej: para 0.01, busca el percentil 99)
+  corte <- quantile(vector_danos, probs = 1 - proporcion, na.rm = TRUE)
+  # Promedia solo los valores que superan ese corte
+  mean(vector_danos[vector_danos >= corte], na.rm = TRUE)
+}
+
+# Generar la tabla de resumen por año de validación
+tabla_extremos <- base_entrenamiento %>%
+  filter(year %in% c(2019, 2020, 2021)) %>%
+  group_by(year) %>%
+  summarise(
+    n_eventos        = n(),
+    promedio_100_pct = mean(dano_usd, na.rm = TRUE),
+    promedio_top_50  = promedio_top_x(dano_usd, 0.50),
+    promedio_top_25  = promedio_top_x(dano_usd, 0.25),
+    promedio_top_10  = promedio_top_x(dano_usd, 0.10),
+    promedio_top_5   = promedio_top_x(dano_usd, 0.05),
+    promedio_top_1   = promedio_top_x(dano_usd, 0.01)
+  ) %>%
+  arrange(year)
+
+# Imprimir la tabla para visualizar
+print(tabla_extremos)
+
+
+
+# MAE_USD POR AÑO DE VALIDACION -------------------------------------------
+
+tabla_mae <- res_m1_orig$detalle %>%
+  select(configuracion, anio_validacion, mae_usd) %>%
+  pivot_wider(
+    names_from   = anio_validacion,
+    values_from  = mae_usd,
+    names_prefix = "mae_usd_"
+  )
+
+tabla_mae
 
 
 # ==============================================================================
@@ -747,4 +801,238 @@ tabla_entregables <- tibble(
 )
 print(tabla_entregables, n = 20)
 cat("Total de archivos generados en", ruta_out_m1, ":", sum(tabla_entregables$existe), "de", nrow(tabla_entregables), "\n")
+cat("===============================================================\n")
+
+
+
+# ==============================================================================
+# PASO 5: Benchmark contra Referencias (Trivial/Mediana) y Control de Filas (#18)
+# ==============================================================================
+
+# 0. Resguardo por si se ejecuta en una sesión limpia sin reajustar glmnet
+ruta_out_m1 <- "interagte3_LM/Resultados"
+if (!exists("ventanas")) source("preparacion_base_datos.R")
+if (!exists("predicciones_desarrollo_m1")) {
+  predicciones_desarrollo_m1 <- readRDS(file.path(ruta_out_m1, "predicciones_desarrollo_m1.rds"))
+}
+if (!exists("control_filas_m1")) {
+  control_filas_m1 <- readRDS(file.path(ruta_out_m1, "control_filas_validacion_m1.rds"))
+}
+
+# 1. Resumen estructural de las 3 ventanas y preservación de EPISODE_ID (Sección 3)
+resumen_ventanas_diseno <- bind_rows(lapply(names(ventanas), function(id_v) {
+  tr <- ventanas[[id_v]]$train
+  va <- ventanas[[id_v]]$valid
+  ep_cruzados <- length(intersect(unique(tr$episode_id), unique(va$episode_id)))
+  
+  tibble(
+    particion          = id_v,
+    anios_train        = paste(sort(unique(tr$year)), collapse = "-"),
+    anio_valid         = unique(va$year),
+    n_eventos_train    = nrow(tr),
+    n_episodios_train  = n_distinct(tr$episode_id),
+    n_eventos_valid    = nrow(va),
+    n_episodios_valid  = n_distinct(va$episode_id),
+    episodios_cruzados = ep_cruzados,
+    prop_ceros_train   = mean(tr$dano_usd == 0) * 100,
+    prop_ceros_valid   = mean(va$dano_usd == 0) * 100,
+    mediana_train_usd  = median(tr$dano_usd),
+    media_train_usd    = mean(tr$dano_usd),
+    mediana_valid_usd  = median(va$dano_usd),
+    media_valid_usd    = mean(va$dano_usd)
+  )
+}))
+
+# 2. Construir predicciones de Referencias (Cero, Mediana Global y Mediana por Tipo)
+#    aprendidas estrictamente en el entrenamiento de cada ventana
+preds_referencias <- bind_rows(lapply(names(ventanas), function(id_v) {
+  tr <- ventanas[[id_v]]$train
+  va <- ventanas[[id_v]]$valid
+  
+  # a. Mediana global en entrenamiento
+  med_global <- median(tr$dano_usd, na.rm = TRUE)
+  
+  # b. Mediana por EVENT_TYPE en entrenamiento (con respaldo en med_global)
+  med_por_tipo <- tr %>%
+    group_by(event_type) %>%
+    summarise(med_tipo = median(dano_usd, na.rm = TRUE), .groups = "drop")
+  
+  va_join <- va %>%
+    left_join(med_por_tipo, by = "event_type") %>%
+    mutate(med_tipo = coalesce(med_tipo, med_global))
+  
+  bind_rows(
+    tibble(
+      EVENT_ID           = va$event_id,
+      EPISODE_ID         = va$episode_id,
+      particion          = id_v,
+      anio_validacion    = va$year,
+      y_observado        = va$dano_usd,
+      y_predicho         = 0,
+      modelo             = "trivial_cero",
+      variante_respuesta = "original",
+      configuracion      = "constante_0_usd"
+    ),
+    tibble(
+      EVENT_ID           = va$event_id,
+      EPISODE_ID         = va$episode_id,
+      particion          = id_v,
+      anio_validacion    = va$year,
+      y_observado        = va$dano_usd,
+      y_predicho         = med_global,
+      modelo             = "referencia_global",
+      variante_respuesta = "original",
+      configuracion      = sprintf("mediana_global ($%.0f)", med_global)
+    ),
+    tibble(
+      EVENT_ID           = va$event_id,
+      EPISODE_ID         = va$episode_id,
+      particion          = id_v,
+      anio_validacion    = va$year,
+      y_observado        = va$dano_usd,
+      y_predicho         = va_join$med_tipo,
+      modelo             = "referencia_tipo",
+      variante_respuesta = "original",
+      configuracion      = "mediana_por_event_type"
+    )
+  )
+}))
+
+# 3. Unir M1 (original y log1p) con las Referencias sobre las mismas 9,975 filas
+mapa_subgrupos <- bind_rows(lapply(names(ventanas), function(id_v) {
+  ventanas[[id_v]]$valid %>%
+    transmute(particion = id_v, EVENT_ID = event_id, mag_origen = mag_origen, event_type = event_type)
+}))
+
+comparacion_completa <- bind_rows(
+  preds_referencias,
+  predicciones_desarrollo_m1
+) %>%
+  left_join(mapa_subgrupos, by = c("particion", "EVENT_ID"))
+
+# a. Resumen global e inter-ventana (V1, V2, V3)
+resumen_m1_vs_ref_ventana <- comparacion_completa %>%
+  group_by(modelo, variante_respuesta, particion, anio_validacion) %>%
+  summarise(
+    n_valid      = n(),
+    mae_usd      = mean(abs(y_observado - y_predicho)),
+    rmse_usd     = sqrt(mean((y_observado - y_predicho)^2)),
+    pred_mediana = median(y_predicho),
+    pred_media   = mean(y_predicho),
+    pred_max     = max(y_predicho),
+    .groups      = "drop"
+  )
+
+tabla_m1_vs_referencias <- resumen_m1_vs_ref_ventana %>%
+  group_by(modelo, variante_respuesta) %>%
+  summarise(
+    mae_V1         = mae_usd[particion == "V1"],
+    mae_V2         = mae_usd[particion == "V2"],
+    mae_V3         = mae_usd[particion == "V3"],
+    mae_medio_usd  = mean(mae_usd),
+    mae_sd_usd     = sd(mae_usd),
+    rmse_medio_usd = mean(rmse_usd),
+    rmse_sd_usd    = sd(rmse_usd),
+    pred_mediana   = mean(pred_mediana),
+    pred_media     = mean(pred_media),
+    .groups        = "drop"
+  ) %>%
+  mutate(
+    dif_mae_vs_ref_global = mae_medio_usd - mae_medio_usd[modelo == "referencia_global"][1],
+    dif_mae_vs_ref_tipo   = mae_medio_usd - mae_medio_usd[modelo == "referencia_tipo"][1]
+  ) %>%
+  arrange(mae_medio_usd)
+
+# b. Resumen por subgrupos de medición (Sensibilidad 2 comparada contra referencias)
+subgrupos_m1_vs_ref <- comparacion_completa %>%
+  group_by(modelo, variante_respuesta, particion, mag_origen) %>%
+  summarise(
+    n_eventos = n(),
+    mae_usd   = mean(abs(y_observado - y_predicho)),
+    rmse_usd  = sqrt(mean((y_observado - y_predicho)^2)),
+    .groups   = "drop"
+  ) %>%
+  group_by(mag_origen, modelo, variante_respuesta) %>%
+  summarise(
+    n_total_valid  = sum(n_eventos),
+    mae_medio_usd  = mean(mae_usd),
+    mae_sd_usd     = sd(mae_usd),
+    rmse_medio_usd = mean(rmse_usd),
+    .groups        = "drop"
+  ) %>%
+  arrange(mag_origen, mae_medio_usd)
+
+# 4. Función verificadora de filas comunes entre los 4 procedimientos (Resp. #18)
+verificar_filas_comunes_modelos <- function(control_base, archivos_rds) {
+  ref_ord <- control_base %>%
+    arrange(particion, EVENT_ID) %>%
+    select(particion, anio_validacion, EVENT_ID, EPISODE_ID)
+  
+  bind_rows(lapply(archivos_rds, function(ruta) {
+    if (!file.exists(ruta)) {
+      return(tibble(archivo = basename(ruta), existe = FALSE))
+    }
+    df <- readRDS(ruta)
+    cols_req <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion",
+                  "y_observado", "y_predicho", "modelo", "variante_respuesta", "configuracion")
+    tiene_cols <- all(cols_req %in% names(df))
+    
+    df %>%
+      group_by(modelo, variante_respuesta) %>%
+      summarise(
+        archivo             = basename(ruta),
+        existe              = TRUE,
+        columnas_contrato   = tiene_cols,
+        n_filas             = n(),
+        n_V1                = sum(particion == "V1"),
+        n_V2                = sum(particion == "V2"),
+        n_V3                = sum(particion == "V3"),
+        ids_exactos_9975    = identical(
+          tibble(particion = particion, anio_validacion = anio_validacion,
+                 EVENT_ID = EVENT_ID, EPISODE_ID = EPISODE_ID) %>% arrange(particion, EVENT_ID),
+          ref_ord
+        ),
+        sin_na_pred         = sum(is.na(y_predicho)) == 0,
+        sin_negativos_pred  = sum(y_predicho < 0, na.rm = TRUE) == 0,
+        .groups = "drop"
+      )
+  }))
+}
+
+# Detectar automáticamente cualquier predicciones_desarrollo_*.rds presente en el proyecto
+rutas_candidatas <- unique(c(
+  file.path(ruta_out_m1, "predicciones_desarrollo_m1.rds"),
+  list.files(pattern = "^predicciones_desarrollo_.*\\.rds$", recursive = TRUE, full.names = TRUE)
+))
+
+tabla_control_filas <- verificar_filas_comunes_modelos(control_filas_m1, rutas_candidatas)
+
+# Guardar las 3 tablas diagnósticas en interagte3_LM/Resultados
+write_csv(resumen_ventanas_diseno, file.path(ruta_out_m1, "resumen_ventanas_diseno_m1.csv"))
+write_csv(tabla_m1_vs_referencias, file.path(ruta_out_m1, "comparacion_m1_vs_referencias.csv"))
+write_csv(subgrupos_m1_vs_ref,     file.path(ruta_out_m1, "subgrupos_m1_vs_referencias.csv"))
+write_csv(tabla_control_filas,     file.path(ruta_out_m1, "control_integridad_filas_m1.csv"))
+
+
+# ==============================================================================
+# BLOQUE DE AUDITORÍA DEL PASO 5
+# ==============================================================================
+cat("\n==================== AUDITORIA PASO 5 (M1) ====================\n")
+
+cat("1. DISEÑO TEMPORAL Y PRESERVACIÓN DE EPISODE_ID (Sección 3):\n")
+print(resumen_ventanas_diseno %>%
+        select(particion, anios_train, anio_valid, n_eventos_train, n_episodios_train,
+               n_eventos_valid, n_episodios_valid, episodios_cruzados,
+               prop_ceros_train, mediana_train_usd, media_train_usd))
+
+cat("\n2. BENCHMARK GLOBAL EN DESARROLLO: M1 vs. REFERENCIAS (Ordenado por MAE medio):\n")
+print(tabla_m1_vs_referencias %>%
+        select(modelo, variante_respuesta, mae_V1, mae_V2, mae_V3,
+               mae_medio_usd, rmse_medio_usd, dif_mae_vs_ref_global, dif_mae_vs_ref_tipo))
+
+cat("\n3. BENCHMARK POR SUBGRUPOS DE MEDICIÓN (Sensibilidad 2: M1 vs. Referencias):\n")
+print(subgrupos_m1_vs_ref, n = 20)
+
+cat("\n4. VERIFICACIÓN DE FILAS COMUNES ENTRE MODELOS (Responsabilidad #18):\n")
+print(tabla_control_filas)
 cat("===============================================================\n")
