@@ -52,12 +52,12 @@ invisible(registrar(storm, "Paquete entregado"))
 table(storm$state,useNA = "ifany")
 table(storm$event_type, useNA = "ifany")
 table(storm$year, useNA = "ifany")
-
+table(storm$year,storm$state,storm$event_type, useNA = "ifany")
 storm <- storm %>%
   filter(event_type %in% c("Hail", "Thunderstorm Wind"),
          state %in% c("TEXAS", "OKLAHOMA", "KANSAS"),
          year >= 2018, year <= 2023) %>%
-  registrar("Recorte de tipo, estado y años", "debería coincidir con el paquete")
+  registrar("Recorte de tipo, estado y años", "coincide con el paquete inicial")
 
 
 ###### ########
