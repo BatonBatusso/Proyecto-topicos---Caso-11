@@ -180,6 +180,7 @@ for (e in seq_len(nrow(escenarios))) {
     tiempos[[length(tiempos) + 1]] <- data.frame(etq, tiempo_seg = r$tiempo)
   }
 }
+
 preds   <- do.call(rbind, preds)
 imps    <- do.call(rbind, imps)
 tiempos <- do.call(rbind, tiempos)
