@@ -11,8 +11,8 @@ library(tidyr)
 
 # 2. Definir la fórmula de predictores admisibles con variables separadas
 # - Se excluye cz_type porque tiene 1 solo nivel ("C") en Hail y Thunderstorm Wind.
-# - Se incluyen mag_hail_in, mag_wind_kt y mag_type_grupo según el plan común.
-# - Se incluyen mag_ausente y coordenadas_validas para capturar ausencias en predictores.
+# - Se separa la magnitud por unidad física mediante event_type:magnitud_z (estandarizada por tipo en train).
+# - Se incluye mag_origen para distinguir granizo, viento medido (MG/MS) y viento estimado (EG/ES).
 formula_m1 <- as.formula(
   "~ mag_origen + event_type:magnitud_z + dur_seg +
      mes_num + hora_inicio + state + begin_lat + begin_lon"
@@ -554,7 +554,7 @@ cat("  - Dimensiones (9975 filas x 2 variantes = 19950):", nrow(predicciones_des
 cat("  - Duplicados por (EVENT_ID, particion, variante_respuesta):",
     sum(duplicated(predicciones_desarrollo_m1[, c("EVENT_ID", "particion", "variante_respuesta")])), "\n")
 cat("  - Archivos guardados en resultados/m1/:\n")
-print(list.files("resultados/m1"))
+print(list.files("interagte3_LM/resultados/m1"))
 cat("===============================================================\n")
 
 
@@ -567,7 +567,6 @@ cat("===============================================================\n")
 
 library(ggplot2)
 
-# 1. Definir la función final de M1 para evaluación en reserva (2022-2023)
 ajustar_predecir_m1_final <- function(df_desarrollo,
                                       df_nuevos,
                                       config_elegida = configuracion_elegida_m1,
@@ -580,7 +579,7 @@ ajustar_predecir_m1_final <- function(df_desarrollo,
   lambda_fijo <- cfg$lambda
   cfg_nombre  <- cfg$configuracion
   
-
+  
   
   # c. Aprender parámetros de imputación física en desarrollo y aplicar a ambos
   params_dev   <- aprender_preproc_m1(df_desarrollo)
@@ -752,7 +751,7 @@ cat("\n==================== AUDITORIA PASO 4 (M1) ====================\n")
 
 # Simulacro: Entrenar con años 2018-2020 y predecir 2021 usando base_entrenamiento_sin_respuesta
 dev_sim    <- base_entrenamiento %>% filter(year <= 2020)
-nuevos_sim <- base_entrenamiento_sin_respuesta %>% filter(year == 2021) %>% select(-dano_usd)
+nuevos_sim <- base_entrenamiento_sin_respuesta %>% filter(year == 2021) %>% select(-any_of(c("dano_usd", "dano_informado")))
 
 test_fn_log  <- ajustar_predecir_m1_final(dev_sim, nuevos_sim, configuracion_elegida_m1, variante = "log1p")
 test_fn_orig <- ajustar_predecir_m1_final(dev_sim, nuevos_sim, configuracion_elegida_m1, variante = "original")
