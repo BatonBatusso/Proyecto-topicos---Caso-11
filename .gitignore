@@ -1,5 +1,6 @@
 # Carpetas a ignorar 
 pruebas
+datos_prueba_sellado
 
 # Archivos a ignorar
 eventos.csv
