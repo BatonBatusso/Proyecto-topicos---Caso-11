@@ -14,56 +14,43 @@ library(tidyr)
 # - Se incluyen mag_hail_in, mag_wind_kt y mag_type_grupo según el plan común.
 # - Se incluyen mag_ausente y coordenadas_validas para capturar ausencias en predictores.
 formula_m1 <- as.formula(
-  "~ is_hail + mag_hail_in + mag_wind_kt + mag_type_grupo + mag_ausente +
-     dur_seg + mes_num + hora_inicio + state + coordenadas_validas + dist_km - 1"
+  "~ mag_origen + event_type:magnitud_z + dur_seg +
+     mes_num + hora_inicio + state + begin_lat + begin_lon"
 )
 # 3. Función auxiliar para aprender parámetros de imputación SOLO en entrenamiento
 aprender_preproc_m1 <- function(df_train) {
-  media_hail <- df_train %>%
-    filter(event_type == "Hail") %>%
-    summarise(m = mean(mag_hail_in, na.rm = TRUE)) %>%
-    pull(m)
-  
-  media_wind <- df_train %>%
-    filter(event_type == "Thunderstorm Wind") %>%
-    summarise(m = mean(mag_wind_kt, na.rm = TRUE)) %>%
-    pull(m)
-  
-  mediana_dur <- median(df_train$dur_seg, na.rm = TRUE)
+  est_mag <- df_train %>%
+    group_by(event_type = as.character(event_type)) %>%
+    summarise(mag_mu = mean(magnitude, na.rm = TRUE),
+              mag_sd = sd(magnitude,   na.rm = TRUE), .groups = "drop") %>%
+    mutate(mag_sd = ifelse(is.na(mag_sd) | mag_sd == 0, 1, mag_sd))
   
   list(
-    media_hail   = ifelse(is.na(media_hail), 0, media_hail),
-    media_wind   = ifelse(is.na(media_wind), 0, media_wind),
-    mediana_dur  = ifelse(is.na(mediana_dur), 0, mediana_dur),
-    niveles_type = levels(df_train$mag_type_grupo),
-    niveles_st   = levels(df_train$state)
+    est_mag        = est_mag,
+    mediana_dur    = median(df_train$dur_seg,   na.rm = TRUE),
+    mediana_lat    = median(df_train$begin_lat, na.rm = TRUE),
+    mediana_lon    = median(df_train$begin_lon, na.rm = TRUE),
+    niveles_tipo   = levels(df_train$event_type),
+    niveles_origen = levels(df_train$mag_origen),
+    niveles_st     = levels(df_train$state)
   )
 }
 
 # 4. Función auxiliar para aplicar el preprocesamiento a train o valid
 aplicar_preproc_m1 <- function(df, params) {
   df %>%
+    mutate(tipo_chr = as.character(event_type)) %>%
+    left_join(params$est_mag, by = c("tipo_chr" = "event_type")) %>%
     mutate(
-      # Asegurar consistencia de niveles en factores entre train y valid
-      mag_type_grupo = factor(mag_type_grupo, levels = params$niveles_type),
-      state          = factor(state, levels = params$niveles_st),
-      
-      # Imputación estructural (0 cuando no aplica el fenómeno) y por media en train cuando falta
-      mag_hail_in = case_when(
-        event_type == "Hail" & !is.na(mag_hail_in) ~ mag_hail_in,
-        event_type == "Hail" & is.na(mag_hail_in)  ~ params$media_hail,
-        TRUE                                       ~ 0
-      ),
-      mag_wind_kt = case_when(
-        event_type == "Thunderstorm Wind" & !is.na(mag_wind_kt) ~ mag_wind_kt,
-        event_type == "Thunderstorm Wind" & is.na(mag_wind_kt)  ~ params$media_wind,
-        TRUE                                                    ~ 0
-      ),
-      
-      # Resguardo ante posibles NA en duración o distancia espacial
-      dur_seg = coalesce(dur_seg, params$mediana_dur),
-      dist_km = coalesce(dist_km, 0)
-    )
+      magnitud_z = coalesce((magnitude - mag_mu) / mag_sd, 0),
+      event_type = factor(tipo_chr, levels = params$niveles_tipo),
+      mag_origen = factor(mag_origen, levels = params$niveles_origen),
+      state      = factor(state,      levels = params$niveles_st),
+      dur_seg    = coalesce(dur_seg,   params$mediana_dur),
+      begin_lat  = coalesce(begin_lat, params$mediana_lat),
+      begin_lon  = coalesce(begin_lon, params$mediana_lon)
+    ) %>%
+    select(-tipo_chr, -mag_mu, -mag_sd)
 }
 
 # 5. Construir matrices X e Y aisladas para cada una de las 3 ventanas
@@ -76,8 +63,8 @@ ventanas_m1 <- lapply(names(ventanas), function(id_v) {
   valid_clean <- aplicar_preproc_m1(v$valid, params_v)
   
   # b. Construir matrices de diseño (glmnet estandariza internamente por defecto)
-  x_train <- model.matrix(formula_m1, data = train_clean)
-  x_valid <- model.matrix(formula_m1, data = valid_clean)
+  x_train <- model.matrix(formula_m1, data = train_clean)[, -1]
+  x_valid <- model.matrix(formula_m1, data = valid_clean)[, -1]
   
   # c. Respuestas en escala original (USD) y escala log1p (Sensibilidad 1)
   y_train_orig <- train_clean$dano_usd
@@ -132,8 +119,8 @@ for (id_v in names(ventanas_m1)) {
               ncol(vm$x_train), cols_iguales))
   cat(sprintf("  - Sin NAs en matrices (train/valid): %s / %s\n", 
               sin_na_train, sin_na_valid))
-  cat(sprintf("  - Medias aprendidas en train -> Hail: %.2f in | Wind: %.2f kt\n\n",
-              vm$params$media_hail, vm$params$media_wind))
+  cat("  - Estadísticos de magnitud aprendidos en train:\n")
+  print(vm$params$est_mag)
 }
 
 cat("Columnas generadas en model.matrix:\n")
@@ -378,7 +365,7 @@ rango_log  <- res_m1_log$resumen  %>% filter(alpha == 1) %>% summarise(min_v = m
 cat(sprintf("  - Escala Original: de %.1f a %.1f variables activas\n", rango_orig$min_v, rango_orig$max_v))
 cat(sprintf("  - Escala Log1p:    de %.1f a %.1f variables activas\n", rango_log$min_v, rango_log$max_v))
 
-cat("\n5. CHEQUEO DE INTEGRIDAD DE PREDICCIONES (V1 + V2 + V3 = 9975 filas):\n")
+cat("\n5. CHEQUEO DE INTEGRIDAD DE PREDICCIONES (V1 + V2 + V3 = 9967 filas):\n")
 for (obj in list(res_m1_orig, res_m1_log)) {
   p <- obj$predicciones
   cat(sprintf("  [%s] Filas: %d | NAs: %d | Inf: %d | Negativos (<0): %d | Min: $%.2f | Max: $%.2f\n",
@@ -386,6 +373,38 @@ for (obj in list(res_m1_orig, res_m1_log)) {
               sum(p$y_predicho < 0), min(p$y_predicho), max(p$y_predicho)))
 }
 cat("===============================================================\n")
+
+# ==============================================================================
+# DIAGNOSTICO DE LA GRILLA (M1)
+# ==============================================================================
+lambda_max_lasso <- function(x, y) {
+  n  <- nrow(x)
+  xc <- sweep(x, 2, colMeans(x))
+  xs <- sweep(xc, 2, sqrt(colMeans(xc^2)), "/")
+  max(abs(crossprod(xs, y - mean(y)))) / n
+}
+
+cat("\n=========== DIAGNOSTICO DE GRILLA (M1) ===========\n")
+cat("1. lambda_max del lasso por ventana (todos los coeficientes en 0):\n")
+tab_lmax <- bind_rows(lapply(names(ventanas_m1), function(id_v) {
+  vm <- ventanas_m1[[id_v]]
+  tibble(particion     = id_v,
+         lmax_original = lambda_max_lasso(vm$x_train, vm$y_train_orig),
+         lmax_log1p    = lambda_max_lasso(vm$x_train, vm$y_train_log))
+}))
+print(tab_lmax)
+cat(sprintf("  - Grilla original: [%.0e, %.0e] | Grilla log1p: [%.0e, %.0e]\n",
+            min(grilla_m1_orig$lambda), max(grilla_m1_orig$lambda),
+            min(grilla_m1_log$lambda),  max(grilla_m1_log$lambda)))
+
+cat("\n2. POSICION DE LA CONFIG ELEGIDA (L01 = lambda mas alto, L10 = mas bajo):\n")
+for (obj in list(res_m1_orig, res_m1_log)) {
+  cfg <- obj$mejor_config$configuracion
+  cat(sprintf("  - %-9s -> %s %s\n", obj$variante, cfg,
+              ifelse(grepl("_L01$|_L10$", cfg),
+                     "<< EN EL BORDE: ampliar grilla", "(interior)")))
+}
+cat("==================================================\n")
 
 
 # ==============================================================================
@@ -492,7 +511,7 @@ predicciones_desarrollo_m1 <- bind_rows(
 
 
 
-ruta_out_m1 <- "interagte3_LM/Resultados"
+ruta_out_m1 <- "interagte3_LM/resultados/m1"
 dir.create(ruta_out_m1, recursive = TRUE, showWarnings = FALSE)
 
 saveRDS(predicciones_desarrollo_m1, file.path(ruta_out_m1, "predicciones_desarrollo_m1.rds"))
@@ -569,8 +588,9 @@ ajustar_predecir_m1_final <- function(df_desarrollo,
   nuevos_clean <- aplicar_preproc_m1(df_nuevos, params_dev)
   
   # d. Construir matrices de diseño (formula_m1 no requiere variable respuesta)
-  x_dev    <- model.matrix(formula_m1, data = dev_clean)
-  x_nuevos <- model.matrix(formula_m1, data = nuevos_clean)
+  x_dev    <- model.matrix(formula_m1, data = dev_clean)[, -1]
+  x_nuevos <- model.matrix(formula_m1, data = nuevos_clean)[, -1]
+  
   
   # e. Definir respuesta de entrenamiento según la variante
   y_dev <- if (variante == "original") dev_clean$dano_usd else log1p(dev_clean$dano_usd)
@@ -612,11 +632,7 @@ ajustar_predecir_m1_final <- function(df_desarrollo,
   )
 }
 
-# Guardar las funciones de preprocesamiento, fórmula y función final en interagte3_LM
-dump(
-  list = c("formula_m1", "aprender_preproc_m1", "aplicar_preproc_m1", "ajustar_predecir_m1_final"),
-  file = file.path(ruta_out_m1, "funcion_final_m1.R")
-)
+
 
 
 # 2. Guardar control de filas comunes de validación en interagte3_LM
@@ -786,8 +802,6 @@ cat("===============================================================\n")
 # PASO 5: Benchmark contra Referencias (Trivial/Mediana) y Control de Filas (#18)
 # ==============================================================================
 
-# 0. Resguardo por si se ejecuta en una sesión limpia sin reajustar glmnet
-ruta_out_m1 <- "interagte3_LM/Resultados"
 if (!exists("ventanas")) source("preparacion_base_datos.R")
 if (!exists("predicciones_desarrollo_m1")) {
   predicciones_desarrollo_m1 <- readRDS(file.path(ruta_out_m1, "predicciones_desarrollo_m1.rds"))

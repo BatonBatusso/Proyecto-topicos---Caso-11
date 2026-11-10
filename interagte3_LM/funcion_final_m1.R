@@ -1,56 +1,52 @@
-formula_m1 <-
-~is_hail + mag_hail_in + mag_wind_kt + mag_type_grupo + mag_ausente + 
-    dur_seg + mes_num + hora_inicio + state + coordenadas_validas + 
-    dist_km - 1
-aprender_preproc_m1 <-
-function(df_train) {
-  media_hail <- df_train %>%
-    filter(event_type == "Hail") %>%
-    summarise(m = mean(mag_hail_in, na.rm = TRUE)) %>%
-    pull(m)
-  
-  media_wind <- df_train %>%
-    filter(event_type == "Thunderstorm Wind") %>%
-    summarise(m = mean(mag_wind_kt, na.rm = TRUE)) %>%
-    pull(m)
-  
-  mediana_dur <- median(df_train$dur_seg, na.rm = TRUE)
+library(glmnet)
+library(dplyr)
+library(tidyr)
+
+formula_m1 <- as.formula(
+  "~ mag_origen + event_type:magnitud_z + dur_seg +
+     mes_num + hora_inicio + state + begin_lat + begin_lon"
+)
+
+
+
+
+aprender_preproc_m1 <- function(df_train) {
+  est_mag <- df_train %>%
+    group_by(event_type = as.character(event_type)) %>%
+    summarise(mag_mu = mean(magnitude, na.rm = TRUE),
+              mag_sd = sd(magnitude,   na.rm = TRUE), .groups = "drop") %>%
+    mutate(mag_sd = ifelse(is.na(mag_sd) | mag_sd == 0, 1, mag_sd))
   
   list(
-    media_hail   = ifelse(is.na(media_hail), 0, media_hail),
-    media_wind   = ifelse(is.na(media_wind), 0, media_wind),
-    mediana_dur  = ifelse(is.na(mediana_dur), 0, mediana_dur),
-    niveles_type = levels(df_train$mag_type_grupo),
-    niveles_st   = levels(df_train$state)
+    est_mag        = est_mag,
+    mediana_dur    = median(df_train$dur_seg,   na.rm = TRUE),
+    mediana_lat    = median(df_train$begin_lat, na.rm = TRUE),
+    mediana_lon    = median(df_train$begin_lon, na.rm = TRUE),
+    niveles_tipo   = levels(df_train$event_type),
+    niveles_origen = levels(df_train$mag_origen),
+    niveles_st     = levels(df_train$state)
   )
 }
-aplicar_preproc_m1 <-
-function(df, params) {
+
+# 4. Función auxiliar para aplicar el preprocesamiento a train o valid
+aplicar_preproc_m1 <- function(df, params) {
   df %>%
+    mutate(tipo_chr = as.character(event_type)) %>%
+    left_join(params$est_mag, by = c("tipo_chr" = "event_type")) %>%
     mutate(
-      # Asegurar consistencia de niveles en factores entre train y valid
-      mag_type_grupo = factor(mag_type_grupo, levels = params$niveles_type),
-      state          = factor(state, levels = params$niveles_st),
-      
-      # Imputación estructural (0 cuando no aplica el fenómeno) y por media en train cuando falta
-      mag_hail_in = case_when(
-        event_type == "Hail" & !is.na(mag_hail_in) ~ mag_hail_in,
-        event_type == "Hail" & is.na(mag_hail_in)  ~ params$media_hail,
-        TRUE                                       ~ 0
-      ),
-      mag_wind_kt = case_when(
-        event_type == "Thunderstorm Wind" & !is.na(mag_wind_kt) ~ mag_wind_kt,
-        event_type == "Thunderstorm Wind" & is.na(mag_wind_kt)  ~ params$media_wind,
-        TRUE                                                    ~ 0
-      ),
-      
-      # Resguardo ante posibles NA en duración o distancia espacial
-      dur_seg = coalesce(dur_seg, params$mediana_dur),
-      dist_km = coalesce(dist_km, 0)
-    )
+      magnitud_z = coalesce((magnitude - mag_mu) / mag_sd, 0),
+      event_type = factor(tipo_chr, levels = params$niveles_tipo),
+      mag_origen = factor(mag_origen, levels = params$niveles_origen),
+      state      = factor(state,      levels = params$niveles_st),
+      dur_seg    = coalesce(dur_seg,   params$mediana_dur),
+      begin_lat  = coalesce(begin_lat, params$mediana_lat),
+      begin_lon  = coalesce(begin_lon, params$mediana_lon)
+    ) %>%
+    select(-tipo_chr, -mag_mu, -mag_sd)
 }
-ajustar_predecir_m1_final <-
-function(df_desarrollo,
+
+
+ajustar_predecir_m1_final <- function(df_desarrollo,
                                       df_nuevos,
                                       config_elegida = configuracion_elegida_m1,
                                       variante = c("log1p", "original")) {
@@ -62,7 +58,7 @@ function(df_desarrollo,
   lambda_fijo <- cfg$lambda
   cfg_nombre  <- cfg$configuracion
   
-
+  
   
   # c. Aprender parámetros de imputación física en desarrollo y aplicar a ambos
   params_dev   <- aprender_preproc_m1(df_desarrollo)
@@ -70,8 +66,9 @@ function(df_desarrollo,
   nuevos_clean <- aplicar_preproc_m1(df_nuevos, params_dev)
   
   # d. Construir matrices de diseño (formula_m1 no requiere variable respuesta)
-  x_dev    <- model.matrix(formula_m1, data = dev_clean)
-  x_nuevos <- model.matrix(formula_m1, data = nuevos_clean)
+  x_dev    <- model.matrix(formula_m1, data = dev_clean)[, -1]
+  x_nuevos <- model.matrix(formula_m1, data = nuevos_clean)[, -1]
+  
   
   # e. Definir respuesta de entrenamiento según la variante
   y_dev <- if (variante == "original") dev_clean$dano_usd else log1p(dev_clean$dano_usd)
@@ -112,3 +109,4 @@ function(df_desarrollo,
     lambda             = lambda_fijo
   )
 }
+

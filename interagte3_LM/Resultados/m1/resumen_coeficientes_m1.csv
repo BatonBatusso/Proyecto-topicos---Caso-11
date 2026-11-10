@@ -1,0 +1,23 @@
+variante_respuesta,configuracion,termino,veces_activo,coef_V1,coef_V2,coef_V3,coef_medio
+log1p,M1_a1_L04,mag_origenviento_estimado,3,1.7507878002610775,1.7846338552478302,1.8134408648429752,1.7829541734506276
+log1p,M1_a1_L04,event_typeHail:magnitud_z,3,0.1936041545155285,0.3430090052416914,0.3243419314794091,0.2869850304122097
+log1p,M1_a1_L04,event_typeThunderstorm Wind:magnitud_z,3,0.21678388238045543,0.146696277114409,0.08177363664458329,0.14841793204648257
+log1p,M1_a1_L04,begin_lat,2,0,-0.04570517547457494,-0.029140753969353474,-0.024948643147976138
+log1p,M1_a1_L04,begin_lon,0,0,0,0,0
+log1p,M1_a1_L04,dur_seg,0,0,0,0,0
+log1p,M1_a1_L04,hora_inicio,0,0,0,0,0
+log1p,M1_a1_L04,mag_origenviento_medido,0,0,0,0,0
+log1p,M1_a1_L04,mes_num,0,0,0,0,0
+log1p,M1_a1_L04,stateKANSAS,0,0,0,0,0
+log1p,M1_a1_L04,stateOKLAHOMA,0,0,0,0,0
+original,M1_a1_L04,event_typeHail:magnitud_z,2,3645.128357895376,0,38842.38183549002,14162.503397795132
+original,M1_a1_L04,dur_seg,1,268.8244827056166,0,0,89.60816090187221
+original,M1_a1_L04,begin_lat,0,0,0,0,0
+original,M1_a1_L04,begin_lon,0,0,0,0,0
+original,M1_a1_L04,event_typeThunderstorm Wind:magnitud_z,0,0,0,0,0
+original,M1_a1_L04,hora_inicio,0,0,0,0,0
+original,M1_a1_L04,mag_origenviento_estimado,0,0,0,0,0
+original,M1_a1_L04,mag_origenviento_medido,0,0,0,0,0
+original,M1_a1_L04,mes_num,0,0,0,0,0
+original,M1_a1_L04,stateKANSAS,0,0,0,0,0
+original,M1_a1_L04,stateOKLAHOMA,0,0,0,0,0

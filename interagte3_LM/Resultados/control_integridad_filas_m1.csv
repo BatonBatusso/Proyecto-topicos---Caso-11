@@ -1,5 +1,0 @@
-modelo,variante_respuesta,archivo,existe,columnas_contrato,n_filas,n_V1,n_V2,n_V3,ids_exactos_9975,sin_na_pred,sin_negativos_pred
-M1_elastic_net,log1p,predicciones_desarrollo_m1.rds,TRUE,TRUE,9975,3950,3372,2653,TRUE,TRUE,TRUE
-M1_elastic_net,original,predicciones_desarrollo_m1.rds,TRUE,TRUE,9975,3950,3372,2653,TRUE,TRUE,TRUE
-M1_elastic_net,log1p,predicciones_desarrollo_m1.rds,TRUE,TRUE,9975,3950,3372,2653,TRUE,TRUE,TRUE
-M1_elastic_net,original,predicciones_desarrollo_m1.rds,TRUE,TRUE,9975,3950,3372,2653,TRUE,TRUE,TRUE
