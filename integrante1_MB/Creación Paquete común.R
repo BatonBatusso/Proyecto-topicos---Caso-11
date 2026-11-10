@@ -37,21 +37,6 @@ stopifnot(!anyDuplicated(base_desarrollo$event_id),
 
 colSums(is.na(base_desarrollo))
 
-base_desarrollo %>% group_by(source) %>%
-  summarise(n = n(), prop_dano = mean(dano_usd > 0), .groups = "drop") %>%
-  arrange(desc(n)) %>% print(n = 50)
-
-base_desarrollo %>% group_by(wfo) %>%
-  summarise(n = n(), prop_dano = mean(dano_usd > 0), .groups = "drop") %>%
-  arrange(desc(n)) %>% print(n = 50)
-
-# niveles que aparecen en validación y no existían en el entrenamiento
-for (a in 2019:2021) {
-  tr <- filter(base_desarrollo, year <  a); va <- filter(base_desarrollo, year == a)
-  cat(a, "| eventos con source nuevo:", sum(!va$source %in% tr$source),
-      "| con wfo nuevo:", sum(!va$wfo %in% tr$wfo), "\n")
-}
-
 saveRDS(base_desarrollo,           "datos_comunes/base_desarrollo.rds")
 saveRDS(base_prueba_sin_respuesta, "datos_comunes/base_prueba_sin_respuesta.rds")
 saveRDS(particiones,               "datos_comunes/particiones_desarrollo.rds")

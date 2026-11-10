@@ -184,6 +184,7 @@ storm_limpio <- storm_limpio %>%
 table(storm_limpio$mag_origen, useNA = "ifany")
 table(storm_limpio$coord_ok, useNA = "ifany")
 
+
 # --- 6. Estructura de episodios ----------------------------------------------
 ep <- storm_limpio %>% group_by(episode_id) %>%
   summarise(n_eventos = n(), anio_min = min(year), anio_max = max(year),
@@ -288,6 +289,23 @@ sum(menor50$dano_usd>0)
 dano_cero_menor50 <- menor50 %>% filter(dano_usd==0)
 # SESGO DE SELECCIÓN, CON MAGNITUD MENORES A 50 SOLO SE REGISTRARON EVENTOS QUE 
 # SI PRODUJERON DAÑOS
+
+##### Variables Source y wfo #####
+##### Variable Source #####
+dev %>% group_by(source) %>%
+  summarise(n = n(), prop_dano = mean(dano_usd > 0), .groups = "drop") %>%
+  arrange(desc(n)) %>% print(n = 50)
+
+dev %>% group_by(wfo) %>%
+  summarise(n = n(), prop_dano = mean(dano_usd > 0), .groups = "drop") %>%
+  arrange(desc(n)) %>% print(n = 50)
+
+# niveles que aparecen en validación y no existían en el entrenamiento
+for (a in 2019:2021) {
+  tr <- filter(storm_limpio, year <  a); va <- filter(storm_limpio, year == a)
+  cat(a, "| eventos con source nuevo:", sum(!va$source %in% tr$source),
+      "| con wfo nuevo:", sum(!va$wfo %in% tr$wfo), "\n")
+}
 
 #####
 
