@@ -1,6 +1,6 @@
 formula_m1 <-
 ~is_hail + mag_hail_in + mag_wind_kt + mag_type_grupo + mag_ausente + 
-    dur_min + mes_num + hora_inicio + state + source + coordenadas_validas + 
+    dur_seg + mes_num + hora_inicio + state + coordenadas_validas + 
     dist_km - 1
 aprender_preproc_m1 <-
 function(df_train) {
@@ -14,15 +14,14 @@ function(df_train) {
     summarise(m = mean(mag_wind_kt, na.rm = TRUE)) %>%
     pull(m)
   
-  mediana_dur <- median(df_train$dur_min, na.rm = TRUE)
+  mediana_dur <- median(df_train$dur_seg, na.rm = TRUE)
   
   list(
     media_hail   = ifelse(is.na(media_hail), 0, media_hail),
     media_wind   = ifelse(is.na(media_wind), 0, media_wind),
     mediana_dur  = ifelse(is.na(mediana_dur), 0, mediana_dur),
     niveles_type = levels(df_train$mag_type_grupo),
-    niveles_st   = levels(df_train$state),
-    niveles_src  = levels(df_train$source)
+    niveles_st   = levels(df_train$state)
   )
 }
 aplicar_preproc_m1 <-
@@ -32,7 +31,6 @@ function(df, params) {
       # Asegurar consistencia de niveles en factores entre train y valid
       mag_type_grupo = factor(mag_type_grupo, levels = params$niveles_type),
       state          = factor(state, levels = params$niveles_st),
-      source         = factor(source, levels = params$niveles_src),
       
       # Imputación estructural (0 cuando no aplica el fenómeno) y por media en train cuando falta
       mag_hail_in = case_when(
@@ -47,7 +45,7 @@ function(df, params) {
       ),
       
       # Resguardo ante posibles NA en duración o distancia espacial
-      dur_min = coalesce(dur_min, params$mediana_dur),
+      dur_seg = coalesce(dur_seg, params$mediana_dur),
       dist_km = coalesce(dist_km, 0)
     )
 }
@@ -64,32 +62,12 @@ function(df_desarrollo,
   lambda_fijo <- cfg$lambda
   cfg_nombre  <- cfg$configuracion
   
-  # b. Aprender agrupación de 'source' (> 2%) exclusivamente en todo desarrollo
-  frec_source <- df_desarrollo %>%
-    count(source) %>%
-    mutate(porcentaje = (n / sum(n)) * 100)
-  
-  source_retener <- frec_source %>%
-    filter(porcentaje > 2) %>%
-    pull(source) %>%
-    as.character()
-  
-  dev_src <- df_desarrollo %>%
-    mutate(
-      source = if_else(as.character(source) %in% source_retener, as.character(source), "Otros"),
-      source = factor(source)
-    )
-  
-  nuevos_src <- df_nuevos %>%
-    mutate(
-      source = if_else(as.character(source) %in% source_retener, as.character(source), "Otros"),
-      source = factor(source, levels = levels(dev_src$source))
-    )
+
   
   # c. Aprender parámetros de imputación física en desarrollo y aplicar a ambos
-  params_dev   <- aprender_preproc_m1(dev_src)
-  dev_clean    <- aplicar_preproc_m1(dev_src, params_dev)
-  nuevos_clean <- aplicar_preproc_m1(nuevos_src, params_dev)
+  params_dev   <- aprender_preproc_m1(df_desarrollo)
+  dev_clean    <- aplicar_preproc_m1(df_desarrollo, params_dev)
+  nuevos_clean <- aplicar_preproc_m1(df_nuevos, params_dev)
   
   # d. Construir matrices de diseño (formula_m1 no requiere variable respuesta)
   x_dev    <- model.matrix(formula_m1, data = dev_clean)

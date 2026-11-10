@@ -14,10 +14,9 @@ library(tidyr)
 # - Se incluyen mag_hail_in, mag_wind_kt y mag_type_grupo según el plan común.
 # - Se incluyen mag_ausente y coordenadas_validas para capturar ausencias en predictores.
 formula_m1 <- as.formula(
-  "~ is_hail + mag_hail_in + mag_wind_kt + mag_type_grupo + mag_ausente + 
-     dur_min + mes_num + hora_inicio + state + source + coordenadas_validas + dist_km - 1"
+  "~ is_hail + mag_hail_in + mag_wind_kt + mag_type_grupo + mag_ausente +
+     dur_seg + mes_num + hora_inicio + state + coordenadas_validas + dist_km - 1"
 )
-
 # 3. Función auxiliar para aprender parámetros de imputación SOLO en entrenamiento
 aprender_preproc_m1 <- function(df_train) {
   media_hail <- df_train %>%
@@ -30,15 +29,14 @@ aprender_preproc_m1 <- function(df_train) {
     summarise(m = mean(mag_wind_kt, na.rm = TRUE)) %>%
     pull(m)
   
-  mediana_dur <- median(df_train$dur_min, na.rm = TRUE)
+  mediana_dur <- median(df_train$dur_seg, na.rm = TRUE)
   
   list(
     media_hail   = ifelse(is.na(media_hail), 0, media_hail),
     media_wind   = ifelse(is.na(media_wind), 0, media_wind),
     mediana_dur  = ifelse(is.na(mediana_dur), 0, mediana_dur),
     niveles_type = levels(df_train$mag_type_grupo),
-    niveles_st   = levels(df_train$state),
-    niveles_src  = levels(df_train$source)
+    niveles_st   = levels(df_train$state)
   )
 }
 
@@ -49,7 +47,6 @@ aplicar_preproc_m1 <- function(df, params) {
       # Asegurar consistencia de niveles en factores entre train y valid
       mag_type_grupo = factor(mag_type_grupo, levels = params$niveles_type),
       state          = factor(state, levels = params$niveles_st),
-      source         = factor(source, levels = params$niveles_src),
       
       # Imputación estructural (0 cuando no aplica el fenómeno) y por media en train cuando falta
       mag_hail_in = case_when(
@@ -64,7 +61,7 @@ aplicar_preproc_m1 <- function(df, params) {
       ),
       
       # Resguardo ante posibles NA en duración o distancia espacial
-      dur_min = coalesce(dur_min, params$mediana_dur),
+      dur_seg = coalesce(dur_seg, params$mediana_dur),
       dist_km = coalesce(dist_km, 0)
     )
 }
@@ -91,7 +88,7 @@ ventanas_m1 <- lapply(names(ventanas), function(id_v) {
   
   # d. Conservar llaves y metadatos para el contrato de entrega y subgrupos
   meta_valid <- valid_clean %>%
-    select(event_id, episode_id, year, event_type, mag_origen, state, source) %>%
+    select(event_id, episode_id, year, event_type, mag_origen, state) %>%
     mutate(particion = id_v)
   
   list(
@@ -564,32 +561,12 @@ ajustar_predecir_m1_final <- function(df_desarrollo,
   lambda_fijo <- cfg$lambda
   cfg_nombre  <- cfg$configuracion
   
-  # b. Aprender agrupación de 'source' (> 2%) exclusivamente en todo desarrollo
-  frec_source <- df_desarrollo %>%
-    count(source) %>%
-    mutate(porcentaje = (n / sum(n)) * 100)
-  
-  source_retener <- frec_source %>%
-    filter(porcentaje > 2) %>%
-    pull(source) %>%
-    as.character()
-  
-  dev_src <- df_desarrollo %>%
-    mutate(
-      source = if_else(as.character(source) %in% source_retener, as.character(source), "Otros"),
-      source = factor(source)
-    )
-  
-  nuevos_src <- df_nuevos %>%
-    mutate(
-      source = if_else(as.character(source) %in% source_retener, as.character(source), "Otros"),
-      source = factor(source, levels = levels(dev_src$source))
-    )
+
   
   # c. Aprender parámetros de imputación física en desarrollo y aplicar a ambos
-  params_dev   <- aprender_preproc_m1(dev_src)
-  dev_clean    <- aplicar_preproc_m1(dev_src, params_dev)
-  nuevos_clean <- aplicar_preproc_m1(nuevos_src, params_dev)
+  params_dev   <- aprender_preproc_m1(df_desarrollo)
+  dev_clean    <- aplicar_preproc_m1(df_desarrollo, params_dev)
+  nuevos_clean <- aplicar_preproc_m1(df_nuevos, params_dev)
   
   # d. Construir matrices de diseño (formula_m1 no requiere variable respuesta)
   x_dev    <- model.matrix(formula_m1, data = dev_clean)
@@ -1036,3 +1013,124 @@ print(subgrupos_m1_vs_ref, n = 20)
 cat("\n4. VERIFICACIÓN DE FILAS COMUNES ENTRE MODELOS (Responsabilidad #18):\n")
 print(tabla_control_filas)
 cat("===============================================================\n")
+
+
+
+
+# ANALISIS DE EVENTOS EXTREMOS CON M1 -------------------------------------
+
+
+
+# Umbral de extremo: P99 del daño en TODO desarrollo (incluye ceros)
+umbral_extremo <- quantile(base_entrenamiento$dano_usd, probs = 0.99, na.rm = TRUE)
+
+base_diag <- predicciones_desarrollo_m1 %>%
+  mutate(
+    estrato = case_when(
+      y_observado >= umbral_extremo ~ "extremo",
+      y_observado == 0              ~ "cero",
+      TRUE                          ~ "positivo_no_extremo"
+    ),
+    error = y_predicho - y_observado
+  )
+
+# Error por estrato, variante y ventana
+diag_estratos_m1 <- base_diag %>%
+  group_by(variante_respuesta, particion, estrato) %>%
+  summarise(n = n(),
+            mae   = mean(abs(error)),
+            rmse  = sqrt(mean(error^2)),
+            sesgo = mean(error),
+            .groups = "drop")
+
+# Resumen promedio de las 3 ventanas (y total de eventos por estrato)
+diag_estratos_resumen_m1 <- diag_estratos_m1 %>%
+  group_by(variante_respuesta, estrato) %>%
+  summarise(n_total = sum(n),
+            mae_medio = mean(mae), rmse_medio = mean(rmse), sesgo_medio = mean(sesgo),
+            .groups = "drop")
+
+# Cuánto del error absoluto total cae en los extremos
+concentracion_m1 <- base_diag %>%
+  group_by(variante_respuesta, particion) %>%
+  summarise(n_extremos = sum(estrato == "extremo"),
+            pct_error_en_extremos = sum(abs(error)[estrato == "extremo"]) / sum(abs(error)) * 100,
+            .groups = "drop")
+
+
+# ==============================================================================
+# AUDITORÍA DEL DIAGNÓSTICO POR ESTRATOS (ejecutar ANTES de guardar)
+# ==============================================================================
+cat("\n============ AUDITORIA DIAGNOSTICO ESTRATOS (M1) ============\n")
+
+# --- 1. Umbral de extremo (P99 en todo desarrollo, incluye ceros) -------------
+n_dev <- nrow(base_entrenamiento)
+cat("1. UMBRAL DE EXTREMO\n")
+cat(sprintf("  - Eventos en desarrollo: %d (esperado %d)\n",
+            n_dev, nrow(ventanas$V3$train) + nrow(ventanas$V3$valid)))
+cat(sprintf("  - Umbral P99: $%.2f | > 0: %s\n", umbral_extremo, umbral_extremo > 0))
+n_ext_dev <- sum(base_entrenamiento$dano_usd >= umbral_extremo)
+cat(sprintf("  - Eventos >= umbral en desarrollo: %d (%.2f%%; esperado ~1%%, más si hay empates)\n",
+            n_ext_dev, n_ext_dev / n_dev * 100))
+
+# --- 2. Clasificación de estratos: completa y sin solapes ---------------------
+cat("\n2. CLASIFICACION EN ESTRATOS\n")
+cat(sprintf("  - Filas con estrato NA: %d\n", sum(is.na(base_diag$estrato))))
+cat(sprintf("  - Filas con error NA/Inf: %d\n", sum(!is.finite(base_diag$error))))
+print(base_diag %>% count(variante_respuesta, particion, estrato) %>%
+        pivot_wider(names_from = estrato, values_from = n, values_fill = 0))
+
+n_por_vent <- base_diag %>% count(variante_respuesta, particion)
+cat("  - n por ventana == 3950/3372/2653 en ambas variantes: ",
+    all(n_por_vent$n == rep(c(3950, 3372, 2653), 2)), "\n")
+
+# --- 3. Coherencia de los cortes ----------------------------------------------
+cat("\n3. COHERENCIA DE LOS CORTES (variante log1p, mismas filas que original)\n")
+chk <- base_diag %>% filter(variante_respuesta == "log1p") %>%
+  group_by(estrato) %>%
+  summarise(n = n(), min_obs = min(y_observado), max_obs = max(y_observado), .groups = "drop")
+print(chk)
+cat(sprintf("  - min(extremo) >= umbral: %s | max(no extremo) < umbral: %s\n",
+            chk$min_obs[chk$estrato == "extremo"] >= umbral_extremo,
+            max(chk$max_obs[chk$estrato != "extremo"]) < umbral_extremo))
+
+# --- 4. Combinaciones faltantes (promediar ventanas con huecos sesga) ---------
+cat("\n4. COMBINACIONES variante x ventana x estrato (esperadas 18):\n")
+cat(sprintf("  - Presentes en diag_estratos_m1: %d\n", nrow(diag_estratos_m1)))
+if (nrow(diag_estratos_m1) < 18) {
+  cat("  - ATENCION: faltan estratos en alguna ventana. El promedio de 3 ventanas en\n",
+      "    diag_estratos_resumen_m1 se calcula con menos de 3 -> reportar n_total y revisar.\n")
+}
+
+# --- 5. Reconstrucción del MAE global desde los estratos ----------------------
+cat("\n5. MAE GLOBAL RECONSTRUIDO (debe coincidir con tabla_mae / auditoria Paso 2)\n")
+recon <- diag_estratos_m1 %>%
+  group_by(variante_respuesta, particion) %>%
+  summarise(mae_reconstruido = sum(n * mae) / sum(n), .groups = "drop")
+ref_mae <- resumen_m1_vs_ref_ventana %>%
+  filter(modelo == "M1_elastic_net") %>%
+  select(variante_respuesta, particion, mae_oficial = mae_usd)
+cmp <- left_join(recon, ref_mae, by = c("variante_respuesta", "particion")) %>%
+  mutate(dif = mae_reconstruido - mae_oficial)
+print(cmp)
+cat("  - Diferencia máxima absoluta: ", max(abs(cmp$dif)), "\n")
+
+# --- 6. Concentración del error -----------------------------------------------
+cat("\n6. CONCENTRACION DEL ERROR EN EXTREMOS\n")
+print(concentracion_m1)
+cat("  - Porcentajes entre 0 y 100: ",
+    all(concentracion_m1$pct_error_en_extremos >= 0 &
+          concentracion_m1$pct_error_en_extremos <= 100), "\n")
+
+# --- 7. Vista de resultados: original vs log1p por estrato --------------------
+cat("\n7. RESUMEN PROMEDIO 3 VENTANAS (original vs log1p):\n")
+print(diag_estratos_resumen_m1, n = 20)
+cat("   Sesgo: negativo = el modelo subestima el daño.\n")
+cat("===============================================================\n")
+
+
+
+
+write_csv(diag_estratos_m1, file.path(ruta_out_m1, "diagnostico_estratos_m1.csv"))
+write_csv(diag_estratos_resumen_m1, file.path(ruta_out_m1, "diagnostico_estratos_resumen_m1.csv"))
+write_csv(concentracion_m1, file.path(ruta_out_m1, "concentracion_error_m1.csv"))

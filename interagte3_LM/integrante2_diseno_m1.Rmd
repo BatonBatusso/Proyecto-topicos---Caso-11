@@ -1,0 +1,412 @@
+---
+title: "Trabajo Final EYP3407 — Caso 11: NOAA Storm Events"
+subtitle: "Secciones 3 y 4: Diseño de Evaluación y Modelo M1 (Elastic Net)"
+author: "Integrante 2 — Lukas Mancilla"
+date: "Noviembre 2026"
+output:
+  pdf_document:
+    toc: false
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: false
+    theme: flatly
+---
+
+```{r setup_m1, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(knitr)
+
+# Detector automático de ruta para compilar desde interagte3_LM/ o desde la raíz del repositorio
+ruta_res_m1 <- if (dir.exists("Resultados")) {
+  "Resultados"
+} else if (dir.exists("interagte3_LM/Resultados")) {
+  "interagte3_LM/Resultados"
+} else {
+  stop("No se encontró la carpeta de resultados de M1.")
+}
+
+# Carga de insumos precalculados y auditados (sin reajustar modelos en el informe)
+resumen_ventanas   <- read_csv(file.path(ruta_res_m1, "resumen_ventanas_diseno_m1.csv"), show_col_types = FALSE)
+config_elegida_m1  <- readRDS(file.path(ruta_res_m1, "configuracion_elegida_m1.rds"))
+tabla_busqueda_m1  <- read_csv(file.path(ruta_res_m1, "tabla_busqueda_m1.csv"), show_col_types = FALSE)
+tiempos_m1         <- read_csv(file.path(ruta_res_m1, "tiempos_m1.csv"), show_col_types = FALSE)
+```
+
+## 3. Diseño de evaluación
+
+### 3.1. Separación entre desarrollo, reserva de prueba y ventanas expansivas
+
+Dado que el objetivo del estudio es caracterizar retrospectivamente el daño material a la propiedad (`DAMAGE_PROPERTY`, expresado en dólares nominales) a partir de las características físicas registradas en eventos de granizo (`Hail`) y viento de tormenta eléctrica (`Thunderstorm Wind`) en Texas, Oklahoma y Kansas entre 2018 y 2023, el diseño de evaluación respeta estrictamente el orden cronológico del fenómeno. Esto evita utilizar información futura para calibrar parámetros o seleccionar configuraciones, y permite evaluar la estabilidad interanual del desempeño frente a cambios en la severidad meteorológica o en las prácticas de reporte de la NOAA.
+
+La base analítica depurada de respuestas faltantes ($19{,}935$ eventos válidos en el periodo 2018–2023) se divide en dos bloques mutuamente excluyentes antes de cualquier ajuste:
+
+1. **Conjunto de desarrollo (2018–2021):** Comprende $12{,}965$ eventos distribuidos en $1{,}901$ episodios de tormenta independientes. Se utiliza exclusivamente para entrenar procedimientos, aprender reglas de preprocesamiento, explorar grillas de hiperparámetros, comparar los cuatro métodos del equipo y ejecutar los dos análisis de sensibilidad.
+2. **Reserva de prueba independiente (2022–2023):** Comprende $6{,}970$ eventos reservados íntegramente fuera del proceso de desarrollo. Sus valores de respuesta no son consultados durante la fase de selección y se emplean en una única evaluación final con el procedimiento e hiperparámetros congelados.
+
+Dentro del conjunto de desarrollo se implementa un esquema de **validación temporal con ventana de origen expansivo (*expanding window*)** compuesto por tres particiones internas (`V1`, `V2` y `V3`), donde cada ventana entrena con todos los años históricos acumulados hasta el año $t$ y evalúa el desempeño fuera de muestra en el año calendario $t + 1$:
+
+```{r tabla_ventanas_diseno}
+tabla_v_mostrar <- resumen_ventanas %>%
+  transmute(
+    `Partición`             = particion,
+    `Años Entrenamiento`    = anios_train,
+    `Año Validación`        = anio_valid,
+    `Eventos Train (ep.)`   = sprintf("%s (%s)", format(n_eventos_train, big.mark = ","), format(n_episodios_train, big.mark = ",")),
+    `Eventos Valid (ep.)`   = sprintf("%s (%s)", format(n_eventos_valid, big.mark = ","), format(n_episodios_valid, big.mark = ",")),
+    `Episodios Cruzados`    = episodios_cruzados,
+    `% Ceros Train`         = sprintf("%.1f%%", prop_ceros_train),
+    `Mediana Train (USD)`   = sprintf("$%.0f", mediana_train_usd),
+    `Media Train (USD)`     = sprintf("$%s", format(round(media_train_usd, 0), big.mark = ","))
+  )
+
+kable(
+  tabla_v_mostrar,
+  align   = c("c", "c", "c", "r", "r", "c", "r", "r", "r"),
+  caption = "Tabla 3.1: Estructura de las tres ventanas expansivas de desarrollo, preservación de episodios y distribución de la respuesta en entrenamiento."
+)
+```
+
+En conjunto, las tres particiones de validación suman exactamente $3{,}950 + 3{,}372 + 2{,}653 = 9{,}975$ observaciones evaluadas fuera de ajuste. Como se aprecia en la Tabla 3.1, más del $81\%$ de los eventos en cada ventana presenta un daño observado exactamente igual a $\$0$, lo que sitúa la mediana de entrenamiento en $\$0$ mientras que la media aritmética supera los $\$12{,}000$–$\$22{,}000$ debido a la extrema asimetría derecha producida por tormentas catastróficas.
+
+### 3.2. Preservación de episodios (`EPISODE_ID`) y dependencia entre eventos
+
+En el sistema de registro *Storm Data* del Servicio Meteorológico Nacional (NWS), la unidad de observación elemental es el evento individual (`EVENT_ID`), pero múltiples eventos generados por un mismo sistema convectivo o frente de tormenta se agrupan bajo un identificador común de episodio (`EPISODE_ID`). Los eventos pertenecientes a un mismo episodio comparten forzamiento meteorológico, trayectoria geográfica, fecha de ocurrencia y oficina local de pronóstico (`WFO`), presentando una fuerte correlación intra-episodio tanto en sus predictores físicos como en el daño material resultante.
+
+Una partición aleatoria por filas repartiría eventos de un mismo episodio simultáneamente en entrenamiento y validación, induciendo fuga de información contextual y subestimando artificialmente el error de generalización. Por ello, el diseño impone como restricción dura que **todos los eventos de un mismo `EPISODE_ID` permanezcan íntegros en la misma partición**. La auditoría de bordes temporales (columna `Episodios Cruzados` de la Tabla 3.1) confirma que existen **cero episodios que crucen de un año calendario a otro** en los cortes 2018–2019, 2019–2020 y 2020–2021, garantizando aditividad exacta de episodios entre ventanas ($475 + 536 = 1{,}011$ en `V2`; $1{,}011 + 449 = 1{,}460$ en `V3`) y una separación limpia frente a la reserva 2022–2023. Esta misma agrupación por `EPISODE_ID` se preserva posteriormente como unidad de remuestreo por bloques en el cálculo de incertidumbre mediante *bootstrap*.
+
+```{r fig_diagrama_temporal, out.width="95%", fig.cap="Figura 3.1: Esquema de validación temporal expansiva en desarrollo (2018-2021) y reserva de prueba (2022-2023), indicando el conteo de eventos válidos (ev) y episodios independientes (ep) por año."}
+knitr::include_graphics(file.path(ruta_res_m1, "diagrama_validacion_temporal.png"))
+```
+
+### 3.3. Información admisible y preprocesamiento interno sin fuga de datos
+
+Para asegurar que los modelos describan el daño material exclusivamente en función de las características físicas y de registro admisibles del fenómeno, se aplican las siguientes reglas de selección y preprocesamiento ajustadas **estrictamente dentro del conjunto de entrenamiento de cada ventana**:
+
+* **Exclusión de consecuencias posteriores y texto libre:** Se excluyen variables que codifican consecuencias del evento (`DAMAGE_CROPS`, `INJURIES_DIRECT`, `INJURIES_INDIRECT`, `DEATHS_DIRECT`, `DEATHS_INDIRECT`) y las narrativas redactadas a posteriori (`EPISODE_NARRATIVE`, `EVENT_NARRATIVE`), dado que suelen describir explícitamente las pérdidas materiales ocurridas. Asimismo, se descartan campos exclusivos de tornados o inundaciones (`TOR_*`, `FLOOD_CAUSE`) y el designador `CZ_TYPE`, que toma un único nivel constante (`"C"`, condado) en todos los registros de granizo y viento de tormenta.
+* **Separación física de la magnitud e indicadores estructurales:** La variable original `MAGNITUDE` mezcla dos escalas físicas incompatibles: diámetro de granizo en pulgadas (`Hail`) y velocidad de ráfaga en nudos (`Thunderstorm Wind`). Se descompone en dos predictores continuos separados (`mag_hail_in` y `mag_wind_kt`) acompañados del indicador binario `is_hail` y del indicador de dato faltante `mag_ausente`. Cuando un evento corresponde a viento, `mag_hail_in` toma un cero estructural (y viceversa). De igual modo, `MAGNITUDE_TYPE` se recodifica en `mag_type_grupo` distinguiendo mediciones instrumentales (`"Medido"`: códigos `MG`/`MS`), estimaciones visuales o por daño (`"Estimado"`: códigos `EG`/`ES`) y la categoría estructural `"No_Aplica"` para granizo.
+* **Imputación condicional y agrupación de categorías poco frecuentes sin fuga:** Cuando la magnitud falta dentro de su propio tipo de evento, se imputa empleando únicamente la media observada en el entrenamiento de esa ventana: en `V1` se aprende $1.26\text{ in}$ para granizo y $56.63\text{ kt}$ para viento; en `V2`, $1.27\text{ in}$ y $56.70\text{ kt}$; y en `V3`, $1.29\text{ in}$ y $56.84\text{ kt}$. La duración (`dur_min`) se resguarda con la mediana de entrenamiento y la distancia recorrida (`dist_km`) con $0\text{ km}$ cuando no se registran coordenadas finales, conservando el indicador `coordenadas_validas`. Para la fuente de reporte (`SOURCE`), se retienen como niveles individuales únicamente aquellas categorías que superan el $2\%$ de frecuencia en el entrenamiento de la ventana respectiva, colapsando el resto —incluyendo cualquier categoría nueva en validación— en el nivel `"Otros"`.
+
+### 3.4. Métricas de comparación y procedimientos de referencia
+
+El desempeño predictivo se evalúa siempre en **dólares nominales (USD)** sobre las mismas $9{,}975$ observaciones de validación:
+
+* **Métrica principal (MAE en USD):** El Error Absoluto Medio, $\text{MAE} = \frac{1}{n}\sum_{i=1}^{n} |y_i - \hat{y}_i|$, cuantifica la desviación monetaria promedio en una escala directamente interpretable y evita que unos pocos eventos multimillonarios dominen por completo el ordenamiento de los modelos.
+* **Métrica complementaria (RMSE en USD):** La Raíz del Error Cuadrático Medio, $\text{RMSE} = \sqrt{\frac{1}{n}\sum_{i=1}^{n} (y_i - \hat{y}_i)^2}$, penaliza cuadráticamente las desviaciones grandes y permite diagnosticar el comportamiento de cada método frente a la cola extrema. Se descarta el uso de MAPE debido a que más del $81\%$ de las respuestas observadas son exactamente cero.
+* **Procedimientos de referencia (*baselines*):** Como punto de comparación mínimo se ajustan dentro de cada entrenamiento la **mediana global** (`referencia_global`) y la **mediana condicionada por tipo de evento** (`referencia_tipo`). Debido a que la proporción de ceros supera el $50\%$ tanto a nivel global como dentro de `Hail` y `Thunderstorm Wind` por separado, ambas referencias coinciden exactamente con la predicción constante $\hat{y} = \$0$, la cual constituye el minimizador teórico incondicional del MAE cuando $\mathbb{P}(Y = 0) \ge 0.5$.
+
+---
+
+## 4. Métodos: Modelo M1 — Regresión Lineal Regularizada (Elastic Net)
+
+### 4.1. Justificación, expectativa a priori y formulación matemática
+
+El primer procedimiento de aprendizaje (**M1**) corresponde a un modelo de regresión lineal penalizada estimado mediante `glmnet`. Su inclusión cumple un rol metodológico doble: evaluar cuánto del daño material puede ser capturado por una combinación lineal aditiva de predictores físicos y administrativos, y controlar la varianza e inestabilidad de mínimos cuadrados ordinarios en presencia de colinealidad estructural (por ejemplo, entre el indicador `is_hail`, las magnitudes separadas por tipo, las categorías de medición `mag_type_grupo` y las fuentes de reporte `source` como estaciones `ASOS` o `Mesonet`).
+
+Dada la matriz de diseño $\mathbf{X} \in \mathbb{R}^{n \times p}$ ($p = 26$ columnas expandidas por `model.matrix`, internamente centradas y estandarizadas a varianza unitaria dentro de cada entrenamiento) y el vector de respuestas $y^* \in \mathbb{R}^n$, `glmnet` resuelve para cada par $(\alpha, \lambda)$ el problema de optimización convexa:
+
+$$\min_{\beta_0, \boldsymbol{\beta}} \left\{ \frac{1}{2n} \sum_{i=1}^{n} \left( y_i^* - \beta_0 - \mathbf{x}_i^\top \boldsymbol{\beta} \right)^2 + \lambda \left[ \alpha \|\boldsymbol{\beta}\|_1 + \frac{1 - \alpha}{2} \|\boldsymbol{\beta}\|_2^2 \right] \right\}$$
+
+donde el intercepto $\beta_0$ no se penaliza (absorbiendo el nivel medio tras el centrado interno de las columnas de $\mathbf{X}$) y el parámetro de mezcla $\alpha \in [0, 1]$ define la naturaleza geométrica de la regularización:
+
+* **Regresión Ridge ($\alpha = 0$, penalización $L_2$):** Contrae proporcionalmente todos los coeficientes hacia cero sin anularlos ($\|\boldsymbol{\beta}\|_2^2 = \sum_{j=1}^p \beta_j^2$), repartiendo el peso entre predictores correlacionados.
+* **Regresión Lasso ($\alpha = 1$, penalización $L_1$):** Impone una restricción de norma absoluta ($\|\boldsymbol{\beta}\|_1 = \sum_{j=1}^p |\beta_j|$) cuya geometría romboidal induce esparsidad exacta, actuando como un selector automático de variables que descarta predictores ruidosos y retiene un subconjunto parsimonioso.
+
+**Expectativa a priori:** Se anticipa que M1 ofrecerá alta interpretabilidad a través del signo y estabilidad de sus coeficientes entre ventanas, pero enfrentará dos vulnerabilidades estructurales severas: (1) su incapacidad para capturar umbrales físicos no lineales o interacciones de orden superior (como el salto abrupto de daños cuando el granizo supera $1.75\text{--}2.00$ pulgadas en zonas pobladas), y (2) la sensibilidad extrema de su función de pérdida cuadrática de entrenamiento frente a los eventos catastróficos multimillonarios.
+
+### 4.2. Sensibilidad 1 en M1: Escala original vs. $\log(1 + Y)$ y retransformación
+
+Un aspecto teórico crucial en M1 es la discrepancia entre la función de pérdida utilizada durante la optimización de `glmnet` (error cuadrático medio, pérdida $L_2$) y la métrica principal de evaluación del caso (MAE, pérdida $L_1$):
+
+* **Variante en escala original ($y_i^* = y_i$ en USD):** Al minimizar pérdida cuadrática directamente en dólares, el estimador lineal busca aproximar la **esperanza condicional** $\mathbb{E}[Y \mid \mathbf{X}]$. Debido a que la distribución de daños tiene más de $81\%$ de ceros pero una cola derecha que alcanza decenas de millones de dólares, la media condicional supera en varios órdenes de magnitud a la mediana condicional ($\mathbb{E}[Y \mid \mathbf{X}] \gg \text{Med}(Y \mid \mathbf{X}) = 0$). En consecuencia, el modelo predice montos positivos de miles de dólares para la gran mayoría de los eventos sin daño, inflando severamente su MAE global. Para respetar el dominio físico del problema, las predicciones lineales se truncan en cero:
+  $$\hat{y}_i^{\text{orig}} = \max\left(0, \, \hat{\beta}_0 + \mathbf{x}_i^\top \hat{\boldsymbol{\beta}}\right)$$
+* **Variante en escala logarítmica ($y_i^* = \log(1 + y_i)$):** Al aplicar la transformación estrictamente creciente $Z = \log(1 + Y)$, los daños multimillonarios se comprimen logarítmicamente (reduciendo la desviación estándar de $\sim 2.0 \times 10^6$ en dólares a $\sim 3.5$ en escala logarítmica). En este espacio comprimido, la asimetría se atenúa drásticamente y la esperanza condicional $\mathbb{E}[Z \mid \mathbf{X}]$ estimada por `glmnet` se aproxima a la mediana condicional $\text{Med}(Z \mid \mathbf{X})$. Por la propiedad de **equivarianza de los cuantiles ante transformaciones monótonas**, dado que $\text{Med}(Y \mid \mathbf{X}) = \exp(\text{Med}(\log(1 + Y) \mid \mathbf{X})) - 1$, al aplicar la retransformación inversa directa (con cota superior de seguridad numérica en $50$ en escala logarítmica y truncamiento inferior en cero):
+  $$\hat{y}_i^{\text{log1p}} = \max\left(0, \, \exp\big(\min(\hat{\beta}_0 + \mathbf{x}_i^\top \hat{\boldsymbol{\beta}}, \, 50)\big) - 1\right)$$
+  el predictor resultante en dólares aproxima la **mediana condicional (o media geométrica desplazada)** de la distribución de daños en lugar de la media aritmética. Deliberadamente se omite el factor de corrección log-normal de media ($\exp(\hat{\sigma}^2/2)$), ya que dicho ajuste reintroduciría el sesgo hacia la cola extrema y degradaría el MAE.
+
+### 4.3. Presupuesto de búsqueda y escalamiento de grillas de $\lambda$ según $\text{SD}(Y)$
+
+Siguiendo el protocolo común del grupo, se fija un presupuesto máximo estricto de **20 configuraciones por variante** de la respuesta, estructurado como el producto cartesiano de $\alpha \in \{0, 1\}$ (Ridge y Lasso) por una secuencia logarítmicamente espaciada de 10 valores de penalización $\lambda$.
+
+En la formulación de `glmnet` con predictores estandarizados, el umbral crítico $\lambda_{\max}$ a partir del cual todos los coeficientes en Lasso se anulan exactamente ($\hat{\boldsymbol{\beta}} = \mathbf{0}$) está dado por el máximo producto interno entre las covariables centradas y los residuos del modelo nulo:
+
+$$\lambda_{\max} = \frac{1}{n} \max_{j \in \{1,\dots,p\}} \left| \sum_{i=1}^{n} \tilde{x}_{ij} (y_i^* - \bar{y}^*) \right| \propto \text{SD}(y^*)$$
+
+Dado que la desviación estándar de la respuesta cambia en casi seis órdenes de magnitud entre ambas escalas ($\text{SD}(Y) \approx 2.0 \times 10^6\text{ USD}$ frente a $\text{SD}(\log(1+Y)) \approx 3.5$), emplear una misma grilla numérica de $\lambda$ anularía todas las variables en una escala o carecería de regularización en la otra. Por ello, las secuencias se escalan proporcionalmente a la dispersión de cada transformación:
+
+```{r tabla_grillas_m1}
+resumen_grillas <- bind_rows(
+  tabla_busqueda_m1 %>%
+    filter(variante_respuesta == "original") %>%
+    group_by(variante_respuesta, alpha) %>%
+    summarise(
+      n_configs     = n(),
+      lambda_max    = max(lambda),
+      lambda_min    = min(lambda),
+      min_vars_act  = min(vars_activas_media),
+      max_vars_act  = max(vars_activas_media),
+      tiempo_seg    = sum(tiempo_total_seg),
+      .groups       = "drop"
+    ),
+  tabla_busqueda_m1 %>%
+    filter(variante_respuesta == "log1p") %>%
+    group_by(variante_respuesta, alpha) %>%
+    summarise(
+      n_configs     = n(),
+      lambda_max    = max(lambda),
+      lambda_min    = min(lambda),
+      min_vars_act  = min(vars_activas_media),
+      max_vars_act  = max(vars_activas_media),
+      tiempo_seg    = sum(tiempo_total_seg),
+      .groups       = "drop"
+    )
+) %>%
+  transmute(
+    `Variante Respuesta`    = if_else(variante_respuesta == "original", "Original (USD)", "Transformada log(1+Y)"),
+    `Familia (alpha)`       = if_else(alpha == 0, "Ridge (alpha = 0)", "Lasso (alpha = 1)"),
+    `Configuraciones`       = n_configs,
+    `Grilla de lambda`      = if_else(variante_respuesta == "original",
+                                      "10^seq(6, 2, len = 10) [100,0000 a 100]",
+                                      "10^seq(1, -3, len = 10) [10 a 0.001]"),
+    `Rango Vars. Activas`   = sprintf("%.1f a %.1f", min_vars_act, max_vars_act),
+    `Tiempo Total (seg)`    = sprintf("%.3f s", tiempo_seg)
+  )
+
+kable(
+  resumen_grillas,
+  align   = c("l", "l", "c", "l", "c", "r"),
+  caption = "Tabla 4.1: Diseño del presupuesto de búsqueda (20 configuraciones por variante), rango de grados de libertad efectivos (variables activas promedio) y costo computacional en desarrollo."
+)
+```
+
+Como demuestra la Tabla 4.1, el escalamiento de las grillas permite que en ambas variantes la penalización Lasso ($\alpha = 1$) recorra de manera efectiva todo el espectro de complejidad: desde el modelo nulo ($0.0$ variables activas en el extremo de máxima penalización $\lambda_{\max}$) hasta modelos densos con $23.3$ (`original`) y $22.3$ (`log1p`) variables activas promedio en el extremo de mínima penalización $\lambda_{\min}$, manteniendo un costo computacional total inferior a $0.3$ segundos para las tres ventanas combinadas. La regla de selección fija como ganadora de cada variante aquella configuración que minimiza el **MAE medio en dólares a través de las tres ventanas de validación**, utilizando el RMSE medio y la mayor parsimonia (mayor $\lambda$) como criterios de desempate.
+
+
+
+---
+
+## 5. Resultados: Modelo M1 (Elastic Net)
+
+```{r carga_resultados_sec5, include=FALSE}
+comp_m1_ref      <- read_csv(file.path(ruta_res_m1, "comparacion_m1_vs_referencias.csv"), show_col_types = FALSE)
+coefs_ventanas   <- read_csv(file.path(ruta_res_m1, "coeficientes_ventanas_m1.csv"), show_col_types = FALSE)
+resumen_coefs    <- read_csv(file.path(ruta_res_m1, "resumen_coeficientes_m1.csv"), show_col_types = FALSE)
+subgrupos_m1_ref <- read_csv(file.path(ruta_res_m1, "subgrupos_m1_vs_referencias.csv"), show_col_types = FALSE)
+control_filas_df <- read_csv(file.path(ruta_res_m1, "control_integridad_filas_m1.csv"), show_col_types = FALSE)
+```
+
+### 5.1. Selección de hiperparámetros y Sensibilidad 1: Escala original vs. $\log(1 + Y)$
+
+Al evaluar las 20 configuraciones candidatas por variante a través de las tres ventanas expansivas de validación ($9{,}975$ observaciones totales), en ambas representaciones de la respuesta resultó seleccionada la penalización **Lasso ($\alpha = 1$)** en el cuarto nivel de la secuencia de regularización (`M1_a1_L04`): con $\lambda = 0.4642$ en escala $\log(1 + Y)$ y con $\lambda = 46{,}415.89$ en escala original. En ningún caso la penalización Ridge ($\alpha = 0$) logró superar a Lasso, debido a que mantener activos los 26 predictores introduce ruido de estimación sobre miles de eventos con daño nulo.
+
+```{r fig_curvas_validacion_m1, out.width="95%", fig.cap="Figura 5.1: Curvas de validación de M1 (MAE medio en USD en las 3 ventanas) según tipo de regularización (Ridge vs. Lasso) y escala de ajuste de la respuesta (Sensibilidad 1). El punto dorado identifica la configuración óptima seleccionada en desarrollo."}
+knitr::include_graphics(file.path(ruta_res_m1, "figura_principal_m1.png"))
+```
+
+La Tabla 5.1 contrasta el desempeño por ventana y el promedio de desarrollo de las dos variantes óptimas de M1 frente a los procedimientos de referencia (`referencia_global` y `referencia_tipo`, que coinciden exactamente con el predictor constante $\hat{y} = \$0$ dado que más del $81\%$ de los registros tienen daño cero en entrenamiento):
+
+```{r tabla_desempeno_global_m1}
+tabla_5_1 <- comp_m1_ref %>%
+  filter(modelo %in% c("referencia_global", "referencia_tipo", "M1_elastic_net")) %>%
+  mutate(
+    Procedimiento = case_when(
+      modelo == "referencia_global" ~ "Referencia: Mediana global ($0)",
+      modelo == "referencia_tipo"   ~ "Referencia: Mediana por tipo ($0)",
+      modelo == "M1_elastic_net" & variante_respuesta == "log1p"    ~ "M1 Elastic Net — log(1+Y) [M1_a1_L04]",
+      modelo == "M1_elastic_net" & variante_respuesta == "original" ~ "M1 Elastic Net — Original [M1_a1_L04]"
+    )
+  ) %>%
+  transmute(
+    `Procedimiento / Variante` = Procedimiento,
+    `MAE V1 (2019)`            = paste0("$", format(round(mae_V1, 0), big.mark = ",", trim = TRUE)),
+    `MAE V2 (2020)`            = paste0("$", format(round(mae_V2, 0), big.mark = ",", trim = TRUE)),
+    `MAE V3 (2021)`            = paste0("$", format(round(mae_V3, 0), big.mark = ",", trim = TRUE)),
+    `MAE Medio (USD)`          = paste0("$", format(round(mae_medio_usd, 2), big.mark = ",", nsmall = 2, trim = TRUE)),
+    `RMSE Medio (USD)`         = paste0("$", format(round(rmse_medio_usd, 0), big.mark = ",", trim = TRUE)),
+    `Mediana / Media Pred.`    = paste0("$", sprintf("%.2f", pred_mediana), " / $",
+                                        format(round(pred_media, 2), big.mark = ",", nsmall = 2, trim = TRUE)),
+    `Dif. MAE vs. Ref.`        = ifelse(
+      dif_mae_vs_ref_global >= 0,
+      paste0("+$", format(round(dif_mae_vs_ref_global, 2), big.mark = ",", nsmall = 2, trim = TRUE)),
+      paste0("-$", format(round(abs(dif_mae_vs_ref_global), 2), big.mark = ",", nsmall = 2, trim = TRUE))
+    )
+  )
+
+kable(
+  tabla_5_1,
+  align   = c("l", "r", "r", "r", "r", "r", "r", "r"),
+  caption = "Tabla 5.1: Desempeño de validación en desarrollo (V1, V2 y V3) de M1 en escala original y log(1+Y) frente a los procedimientos de referencia (unidades en dólares nominales)."
+)
+```
+Del contraste de la Sensibilidad 1 en la Figura 5.1 y la Tabla 5.1 se desprenden tres resultados estadísticos centrales:
+
+1. **Incompatibilidad del ajuste en escala original con la métrica MAE:** El modelo `M1_original` obtiene un MAE medio de **$\$161{,}021.09$**, empeorando en **$+\$12{,}898.63$ ($+8.71\%$)** el error de la referencia trivial ($\$148{,}122.46$). Al minimizar error cuadrático directamente en dólares, el ajuste es arrastrado por los eventos multimillonarios y genera predicciones entre $\$2{,}376.68$ y $\$3{,}700{,}528.66$ (con una media predicha de $\$17{,}218.57$ y mediana de $\$9{,}042.59$). Esto provoca que en más del $81\%$ de los eventos cuyo daño real es $\$0$, el modelo cometa sistemáticamente un error absoluto de varios miles de dólares por fila. El caso más ilustrativo ocurre en la ventana `V2` (2020), donde la penalización anula todas las covariables y predice para las $3{,}372$ filas exactamente la media aritmética del entrenamiento ($\hat{\beta}_0 = \$13{,}334.48$), elevando el MAE de $\$49{,}431$ a $\$59{,}693$.
+2. **Superioridad y alineamiento teórico de la variante `log1p`:** La transformación $\log(1 + Y)$ combinada con la retransformación directa `expm1` reduce el MAE medio a **$\$148{,}123.71$** (una mejora de **$\$12{,}897.38$** por evento respecto a la escala original) y disminuye el RMSE medio a **$\$1{,}972{,}841.70$**. Al comprimir la cola extrema antes del ajuste cuadrático, las predicciones retransformadas se sitúan entre $\$1.12$ y $\$2{,}168.46$ (mediana predicha de $\$2.07$ y media de $\$4.98$), aproximando la mediana condicional de la distribución. Por ello, `M1_log1p` (`M1_a1_L04`, $\alpha = 1, \lambda = 0.4642$) se establece inequívocamente como la **configuración ganadora global de M1**.
+3. **Empate técnico frente a la referencia global y volatilidad interanual:** La diferencia global de MAE entre `M1_log1p` y la referencia $\hat{y} = \$0$ es de apenas **$+\$1.25$ ($+0.0008\%$)**. Dado que para cualquier combinación lineal de predictores más de la mitad de los registros siguen teniendo daño cero, la mediana condicional verdadera permanece en $\$0$; cuando `M1_log1p` predice unos pocos dólares positivos, la reducción de error en el $\sim 18\%$ de eventos con daño positivo se compensa casi exactamente con la leve penalización en el $\sim 82\%$ de eventos sin daño. Asimismo, se observa una fuerte no estacionariedad entre años de validación: el MAE pasa de $\sim \$11{,}509$ en 2019 (`V1`) y $\sim \$49{,}432$ en 2020 (`V2`) a $\sim \$383{,}430$ en 2021 (`V3`), producto de episodios extraordinarios de granizo en 2021 cuyo impacto domina el error absoluto y cuadrático de todos los procedimientos.
+
+---
+
+### 5.2. Selección, estabilidad e interpretación de coeficientes entre ventanas
+
+Una ventaja distintiva de M1 con penalización Lasso ($\alpha = 1$) es que permite auditar exactamente qué variables sobreviven a la regularización en cada corte histórico. La Tabla 5.2 presenta los interceptos y todos los predictores que resultaron activos ($\hat{\beta}_j \neq 0$) en al menos una ventana de desarrollo:
+
+```{r tabla_coeficientes_m1}
+interceptos_df <- coefs_ventanas %>%
+  filter(termino == "(Intercept)") %>%
+  group_by(variante_respuesta, configuracion, termino) %>%
+  summarise(
+    veces_activo = sum(activo),
+    coef_V1      = coeficiente[particion == "V1"],
+    coef_V2      = coeficiente[particion == "V2"],
+    coef_V3      = coeficiente[particion == "V3"],
+    coef_medio   = mean(coeficiente),
+    .groups      = "drop"
+  )
+
+tabla_5_2_raw <- bind_rows(
+  interceptos_df,
+  resumen_coefs %>% filter(veces_activo > 0)
+) %>%
+  mutate(orden_tipo = if_else(termino == "(Intercept)", 0L, 1L)) %>%
+  arrange(desc(variante_respuesta), orden_tipo, desc(veces_activo), desc(abs(coef_medio)))
+
+formatear_coef <- function(x, var_resp) {
+  ifelse(
+    var_resp == "log1p",
+    sprintf("%+.4f", x),
+    ifelse(
+      x >= 0,
+      paste0("+$", format(round(x, 1), big.mark = ",", nsmall = 1, trim = TRUE)),
+      paste0("-$", format(round(abs(x), 1), big.mark = ",", nsmall = 1, trim = TRUE))
+    )
+  )
+}
+
+tabla_5_2 <- tabla_5_2_raw %>%
+  transmute(
+    `Escala Respuesta`    = if_else(variante_respuesta == "log1p", "log(1 + Y) [Ganadora]", "Original (USD)"),
+    `Término / Predictor` = termino,
+    `Ventanas Activo`     = if_else(termino == "(Intercept)", "3 / 3 (Base)", sprintf("%d / 3", veces_activo)),
+    `Coef. V1 (2018)`     = formatear_coef(coef_V1, variante_respuesta),
+    `Coef. V2 (18-19)`    = formatear_coef(coef_V2, variante_respuesta),
+    `Coef. V3 (18-20)`    = formatear_coef(coef_V3, variante_respuesta),
+    `Coef. Medio`         = formatear_coef(coef_medio, variante_respuesta)
+  )
+
+kable(
+  tabla_5_2,
+  align   = c("l", "l", "c", "r", "r", "r", "r"),
+  caption = "Tabla 5.2: Coeficientes estimados y estabilidad de selección en las tres ventanas expansivas para las configuraciones ganadoras de M1 (Lasso, alpha = 1)."
+)
+```
+
+El análisis comparado de la Tabla 5.2 revela un contraste profundo en la estabilidad e interpretación física de ambas variantes:
+
+* **Estabilidad perfecta en escala $\log(1 + Y)$ (`veces_activo = 3 / 3`):** En la variante ganadora `log1p`, Lasso selecciona **exactamente las mismas 3 variables en las tres ventanas**, conservando signos y magnitudes altamente consistentes:
+  1. `mag_type_grupoMedido` (coeficientes $-0.8419$, $-0.7458$ y $-0.8884$; media **$-0.8254$**): Es el predictor de mayor peso relativo. En escala multiplicativa, un evento de viento cuya magnitud proviene de medición instrumental (`MG`/`MS`) reduce el factor $(1 + \hat{Y})$ en $1 - \exp(-0.8254) \approx \mathbf{56.2\%}$ respecto a un evento equivalente de viento estimado (`EG`/`ES`) o de granizo. Estadísticamente, esto no significa que una ráfaga medida sea físicamente menos dañina que una estimada de igual velocidad, sino que captura un **sesgo de selección en el mecanismo de reporte**: los sensores automáticos (`ASOS`/`Mesonet`, situados mayoritariamente en aeropuertos y estaciones abiertas) registran ráfagas severas cada vez que superan el umbral meteorológico aunque no exista infraestructura afectada, mientras que los reportes de viento estimado suelen originarse precisamente cuando observadores o autoridades constatan daños materiales visibles.
+  2. `dist_km` (coeficientes $+0.0566$, $+0.0706$ y $+0.0485$; media **$+0.0586$**): Por cada kilómetro adicional de trayectoria entre el punto de inicio y fin del evento, el valor $(1 + \hat{Y})$ se incrementa en aproximadamente $+6.0\%$. Tiene sentido físico directo: tormentas con mayor recorrido espacial abarcan una huella geográfica más extensa, aumentando la probabilidad de intersectar zonas edificadas.
+  3. `mag_wind_kt` (coeficientes $+0.0252$, $+0.0155$ y $+0.0221$; media **$+0.0209$**): Cada nudo adicional de velocidad del viento incrementa $(1 + \hat{Y})$ en torno a $+2.1\%$, confirmando una asociación positiva monótona entre la energía cinética de la ráfaga y la severidad del daño en tormentas de viento.
+* **Inestabilidad y contaminación administrativa en escala original:** En la variante `original`, la selección es errática entre ventanas: en `V2` todas las pendientes colapsan a cero ($0$ variables activas), mientras que en `V1` y `V3` el modelo queda dominado por una categoría administrativa de la fuente de reporte: `sourceNWS Employee` (`veces_activo = 2 / 3`, con coeficientes de $+\$111{,}012$ en `V1` y $+\$213{,}053$ en `V3`; media **$+\$108{,}022$**). Esto ocurre porque los empleados del NWS realizan levantamientos en terreno (*storm surveys*) específicamente después de episodios con destrucción severa o pérdidas multimillonarias. Las variables físicas `dist_km` ($+\$43{,}185$ en `V3`), `dur_min` ($+\$15{,}847$ en `V3`) y `mag_hail_in` ($+\$2{,}638$ en `V1`) aparecen en una sola ventana cada una, demostrando que el ajuste lineal en dólares nominales es hipersensible a los *outliers* de cada año particular.
+
+---
+
+### 5.3. Sensibilidad 2: Desempeño por subgrupos de medición y rol de `SOURCE`
+
+Para examinar cómo varía el desempeño según la naturaleza física del fenómeno y la calidad de medición de su magnitud, la Tabla 5.3 desglosa el MAE y RMSE promedio de las tres ventanas en los tres subgrupos estructurales (`granizo`, `viento_estimado` y `viento_medido`):
+
+```{r tabla_subgrupos_m1}
+tabla_5_3 <- subgrupos_m1_ref %>%
+  filter(modelo %in% c("referencia_global", "M1_elastic_net")) %>%
+  mutate(
+    Subgrupo = case_when(
+      mag_origen == "granizo"         ~ "1. Granizo (Hail, en pulgadas)",
+      mag_origen == "viento_estimado" ~ "2. Viento estimado (EG / ES, en nudos)",
+      mag_origen == "viento_medido"   ~ "3. Viento medido (MG / MS, en nudos)"
+    ),
+    Procedimiento = case_when(
+      modelo == "referencia_global" ~ "Referencia ($0)",
+      modelo == "M1_elastic_net" & variante_respuesta == "log1p"    ~ "M1 Elastic Net — log(1+Y)",
+      modelo == "M1_elastic_net" & variante_respuesta == "original" ~ "M1 Elastic Net — Original"
+    )
+  ) %>%
+  arrange(Subgrupo, mae_medio_usd) %>%
+  transmute(
+    `Subgrupo de Medición` = Subgrupo,
+    `Procedimiento`        = Procedimiento,
+    `Eventos Valid. (n)`   = format(n_total_valid, big.mark = ","),
+    `MAE Medio (USD)`      = sprintf("$%s", format(round(mae_medio_usd, 1), big.mark = ",", nsmall = 1)),
+    `DE Inter-ventana MAE` = sprintf("$%s", format(round(mae_sd_usd, 1), big.mark = ",", nsmall = 1)),
+    `RMSE Medio (USD)`     = sprintf("$%s", format(round(rmse_medio_usd, 0), big.mark = ","))
+  )
+
+kable(
+  tabla_5_3,
+  align   = c("l", "l", "r", "r", "r", "r"),
+  caption = "Tabla 5.3: Resultados de la Sensibilidad 2 para M1 — Desempeño de validación desglosado por tipo de evento y calidad de medición de la magnitud."
+)
+```
+
+Los resultados por subgrupos en la Tabla 5.3 evidencian una marcada heterogeneidad entre regímenes físicos y de medición:
+
+* **Viento estimado (`EG`/`ES`, $n = 3{,}236$, $32.4\%$ de validación):** Es el único subgrupo donde `M1_log1p` **supera simultáneamente a los procedimientos de referencia tanto en MAE medio ($\$24{,}855.7$ vs. $\$24{,}856.0$) como en RMSE medio ($\$330{,}252$ vs. $\$330{,}258$)**, reduciendo además el MAE en un **$31.4\%$** frente a `M1_original` ($\$36{,}207.2$). Dado que los vientos estimados tienen mayor prevalencia de daños materiales moderados, la combinación lineal de velocidad (`mag_wind_kt`) y distancia (`dist_km`) en escala logarítmica logra extraer señal útil sin sobrepredecir los ceros.
+* **Viento medido instrumentalmente (`MG`/`MS`, $n = 1{,}625$, $16.3\%$ de validación):** Presenta el menor nivel de daño real de toda la base (el error de predecir $\$0$ es de apenas $\$1{,}200.0$ de MAE y $\$11{,}789$ de RMSE). Mientras que `M1_original` sufre un sesgo severo en este grupo ($\text{MAE} = \$17{,}396.3$, $\text{RMSE} = \$83{,}097$) por arrastrar el intercepto global de entrenamiento, `M1_log1p` corrige automáticamente la predicción gracias al coeficiente negativo de `mag_type_grupoMedido` ($-0.8254$), logrando una **reducción del $93.1\%$ en el MAE ($\$1{,}203.2$)** y del **$85.8\%$ en el RMSE ($\$11{,}788$, superando incluso el RMSE de la referencia)**.
+* **Granizo (`Hail`, $n = 5{,}114$, $51.3\%$ de validación):** Concentra más de la mitad de las observaciones y la totalidad de las pérdidas catastróficas extremas ($\text{MAE} \approx \$265{,}880$ y $\text{RMSE} \approx \$2{,}660{,}886$). Aunque `M1_log1p` mejora en **$\$12{,}811$** el MAE de `M1_original` ($\$265{,}880.5$ vs. $\$278{,}691.5$), Lasso anula el coeficiente lineal de `mag_hail_in` en la escala logarítmica, dejando el desempeño idéntico a la referencia. Esto ocurre porque la relación entre el diámetro del granizo y el daño no es lineal en el rango bajo ($0.75\text{--}1.50\text{ in}$, donde predominan los ceros) y se dispara de forma altamente no lineal solo cuando piedras grandes impactan áreas densamente urbanizadas.
+* **Efecto de la fuente de reporte (`SOURCE`):** La selección automática de Lasso en la Tabla 5.2 proporciona una respuesta analítica directa sobre la sensibilidad respecto a `SOURCE`: en la configuración ganadora `M1_log1p`, **los 12 niveles de `source` tienen coeficiente exactamente igual a $0$ en las tres ventanas (`veces_activo = 0 / 3`)**. Esto demuestra que, una vez controlada la distinción instrumental mediante `mag_type_grupoMedido`, eliminar la variable `source` deja las predicciones y métricas de `M1_log1p` **exactamente invariantes**, evitando depender de sesgos administrativos de reporte.
+
+---
+
+### 5.4. Control de comparabilidad: Verificación de filas comunes y función final
+
+Como parte de la responsabilidad transversal de diseño e integración (Responsabilidad #18), se construyó el archivo patrón `control_filas_validacion_m1.rds` y la función auditora `verificar_filas_comunes_modelos()`, cuyo objetivo es garantizar que los cuatro procedimientos del equipo se evalúen exactamente sobre los mismos identificadores `EVENT_ID` y `EPISODE_ID` en cada ventana, respetando las 9 columnas obligatorias del contrato de entrega.
+
+```{r tabla_control_integridad}
+tabla_5_4 <- control_filas_df %>%
+  distinct(modelo, variante_respuesta, .keep_all = TRUE) %>%
+  transmute(
+    `Modelo Auditado`       = modelo,
+    `Variante`              = variante_respuesta,
+    `Cols. Contrato (9)`    = if_else(columnas_contrato, "Cumple (TRUE)", "Falla"),
+    `Total Filas`           = format(n_filas, big.mark = ","),
+    `V1 / V2 / V3`          = sprintf("%s / %s / %s",
+                                      format(n_V1, big.mark = ","),
+                                      format(n_V2, big.mark = ","),
+                                      format(n_V3, big.mark = ",")),
+    `Match Exacto IDs`      = if_else(ids_exactos_9975, "Exacto (100%)", "Discrepancia"),
+    `Sin NAs / Sin Neg.`    = if_else(sin_na_pred & sin_negativos_pred, "OK (0 / 0)", "Error")
+  )
+
+kable(
+  tabla_5_4,
+  align   = c("l", "c", "c", "r", "c", "c", "c"),
+  caption = "Tabla 5.4: Auditoría de integridad de filas comunes de validación (9,975 observaciones) y cumplimiento del contrato de entrega en desarrollo."
+)
+```
+
+Adicionalmente, antes de congelar el módulo para la etapa de prueba, se verificó en seco la función encapsulada `ajustar_predecir_m1_final()` (almacenada en `funcion_final_m1.R`) entrenando con el bloque 2018–2020 y prediciendo el año 2021 a partir de una tabla desprovista de la variable respuesta (`base_entrenamiento_sin_respuesta`). El chequeo confirmó la generación de las $2{,}653$ predicciones sin valores faltantes ni negativos y con una discrepancia numérica máxima de **$0.00000000\text{ USD}$** respecto a las predicciones de validación de `V3`, acreditando reproducibilidad exacta y ausencia total de fuga de información.
+
+---
+
+## 6. Discusión: Alcances y Límites Estructurales desde M1
+
+### 6.1. Respuesta a la pregunta de investigación desde el modelado lineal regularizado
+
+En relación con la pregunta central del Caso 11 —*¿qué tan bien pueden las características físicas registradas de un evento de granizo o viento describir el daño material informado?*—, la evidencia empírica obtenida con M1 demuestra que **una combinación lineal aditiva de predictores físicos tiene una capacidad descriptiva muy limitada sobre la magnitud monetaria del daño**, logrando en su mejor especificación (`M1_log1p`) igualar el MAE global de la referencia constante ($\$148{,}123.71$ vs. $\$148{,}122.46$) y superarla marginalmente únicamente en el subgrupo de vientos estimados y en el RMSE de vientos medidos.
+
+Lejos de representar una falla algorítmica del ajuste, este resultado pone en evidencia tres límites estructurales de los datos y del fenómeno físico-económico que explican por qué un modelo lineal global no puede anticipar la cola de pérdidas:
+
+1. **Ausencia de variables de exposición económica y vulnerabilidad territorial (variable omitida crítica):** El daño material no es una función puramente meteorológica, sino el producto de la **peligrosidad física** por la **exposición y vulnerabilidad de los activos en superficie**. En los registros de la NOAA para Texas, Oklahoma y Kansas, una tormenta con granizo de $2.5\text{ pulgadas}$ o ráfagas de $70\text{ nudos}$ que descarga sobre terrenos agrícolas deshabitados o praderas abiertas registra legítimamente `DAMAGE_PROPERTY = $0`, mientras que un evento físicamente idéntico sobre el área metropolitana de Dallas-Fort Worth, Oklahoma City o Wichita produce cientos de millones de dólares en pérdidas aseguradas. Como el paquete de datos no incluye densidad poblacional, valor del parque inmobiliario ni uso de suelo en las coordenadas del evento (y predictores macro como `state` son demasiado gruesos para capturar esa micro-heterogeneidad urbana/rural), más del $81\%$ de los eventos severos resultan en daño cero independientemente de su intensidad física.
+2. **Endogeneidad entre el daño observado y el mecanismo de medición/reporte:** El análisis de coeficientes de M1 reveló que las señales más intensas del registro no son puramente físicas, sino que reflejan **cómo se enteró el sistema de la tormenta**. La fuerte asociación negativa de `mag_type_grupoMedido` ($-0.8254$ en escala $\log(1+Y)$) y el enorme premio en dólares de `sourceNWS Employee` ($+\$108{,}022$ en escala original) confirman que el proceso de captura de datos de *Storm Data* depende del impacto: las estaciones instrumentales (`ASOS`/`Mesonet`) reportan la física del viento de manera objetiva aunque no ocurran daños, mientras que las estimaciones visuales y las inspecciones de empleados del NWS se activan selectivamente cuando ya existen daños materiales que reportar.
+3. **Rigidez aditiva frente a umbrales no lineales y barrera del $50\%$ de ceros en el MAE:** Físicamente, el daño por granizo e impacto de viento presenta umbrales de rotura no lineales (por ejemplo, tejas asfálticas y parabrisas resisten granizos pequeños de $0.75\text{--}1.00\text{ in}$ sin daño, pero sufren fractura generalizada al superar $1.75\text{--}2.00\text{ in}$). Un hiperplano lineal global no puede representar simultáneamente una respuesta nula en la mayor parte del dominio y un crecimiento exponencial súbito en la cola superior; cualquier pendiente positiva para `mag_hail_in` penaliza los miles de eventos de granizo pequeño sin daño, razón por la cual Lasso la encoge a cero en `log1p`. Esto justifica directamente el paso hacia métodos no lineales basados en particiones recursivas (**M2: Árbol de regresión podado** y **M3: Random Forest**), capaces de aislar interacciones locales (como ubicación geográfica $\times$ umbral de magnitud $\times$ fuente de reporte).
+
+### 6.2. Condiciones de uso y límites de generalización
+
+Si se requiriera utilizar M1 como línea base paramétrica dentro de un flujo de caracterización retrospectiva, **debe emplearse exclusivamente la variante `log1p` con retransformación `expm1`**, descartando por completo el ajuste lineal en escala original debido a su severo sesgo de sobrepredicción en presencia de colas pesadas. Aun así, su uso debe restringirse a la estimación del comportamiento típico (mediana condicional) en eventos de viento y nunca como herramienta de tarificación de riesgo catastrófico o pronóstico operativo previo a la tormenta, dado que los registros dependen de atributos reconstruidos *post-hoc* y expresados en dólares nominales sin ajuste por inflación ni exposición inmobiliaria.
