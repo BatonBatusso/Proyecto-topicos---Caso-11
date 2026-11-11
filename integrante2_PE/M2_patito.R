@@ -1,32 +1,46 @@
-# TOPICOS APLICADOS EN ESTADISTICA - CASO 11 NOAA
-# INTEGRANTE 3: M2 ARBOL DE REGRESION Y PODA
-# Los resultados y graficos aparecen en RStudio. No se guardan solos.
-
+# TOPICOS APLICADOS - CASO 11
+# M2: ARBOL DE REGRESION CON PODA
+# Los graficos se ven en RStudio. Los resultados se guardan al final.
+setwd(
+  "C:/Users/SuperUsuario/Proyecto-topicos---Caso-11"
+)
 library(dplyr)
-library(tidyr)
 library(rpart)
 library(ggplot2)
 
-# Cambiar a TRUE solamente cuando corresponda.
+# Estas dos opciones quedan apagadas hasta que el grupo las necesite.
 integrar_ahora <- FALSE
 evaluar_reserva <- FALSE
 
+# 1. DATOS COMUNES ----------------------------------------------------------
+# Leo las bases que preparo el grupo. No las modifico.
+archivos_comunes <- c(
+  "datos_comunes/base_desarrollo.rds",
+  "datos_comunes/particiones_desarrollo.rds",
+  "datos_comunes/configuracion_comun.rds"
+)
 
-# 1. DATOS COMUNES -----------------------------------------------------------
+archivos_faltantes <- archivos_comunes[!file.exists(archivos_comunes)]
+if (length(archivos_faltantes) > 0) {
+  stop(
+    "No se encontraron estos archivos comunes: ",
+    paste(archivos_faltantes, collapse = ", "),
+    ". Ejecuta M2 desde la carpeta principal del proyecto."
+  )
+}
+
 base_desarrollo <- readRDS("datos_comunes/base_desarrollo.rds")
 particiones <- readRDS("datos_comunes/particiones_desarrollo.rds")
 configuracion <- readRDS("datos_comunes/configuracion_comun.rds")
 
 if (!is.null(configuracion$semilla)) set.seed(configuracion$semilla)
 
-# Compatibilidad con los nombres del paquete comun anterior.
-# Las variables antiguas sirven SOLO para reconstruir las aprobadas;
-# ninguna entra como predictor al arbol.
+# Dejo los nombres de las variables como los usa el modelo.
 adaptar_nombres <- function(datos) {
   if (!"dano_usd" %in% names(datos) && "damage_property_usd" %in% names(datos)) {
     datos$dano_usd <- datos$damage_property_usd
   }
-  # Usar la duracion en segundos, aunque la base comun venga en minutos.
+  # La duracion la trabajo en segundos.
   if (!"dur_seg" %in% names(datos) && "dur_min" %in% names(datos)) {
     datos$dur_seg <- as.numeric(datos$dur_min) * 60
   }
@@ -44,13 +58,114 @@ adaptar_nombres <- function(datos) {
   datos
 }
 
+# Los ID pueden venir en mayusculas o minusculas.
+normalizar_identificadores <- function(datos, nombre_objeto) {
+  nombres_originales <- names(datos)
+  nombres_mayuscula <- toupper(nombres_originales)
+
+  posicion_evento <- which(nombres_mayuscula == "EVENT_ID")
+  posicion_episodio <- which(nombres_mayuscula == "EPISODE_ID")
+
+  if (length(posicion_evento) == 0) {
+    stop(
+      "No se encontro EVENT_ID ni event_id en ", nombre_objeto,
+      ". Columnas relacionadas con ID: ",
+      paste(grep("id", nombres_originales, value = TRUE,
+                 ignore.case = TRUE), collapse = ", ")
+    )
+  }
+  if (length(posicion_episodio) == 0) {
+    stop(
+      "No se encontro EPISODE_ID ni episode_id en ", nombre_objeto,
+      ". Columnas relacionadas con ID: ",
+      paste(grep("id", nombres_originales, value = TRUE,
+                 ignore.case = TRUE), collapse = ", ")
+    )
+  }
+  if (length(posicion_evento) > 1) {
+    stop("Hay mas de una columna equivalente a EVENT_ID en ", nombre_objeto, ".")
+  }
+  if (length(posicion_episodio) > 1) {
+    stop("Hay mas de una columna equivalente a EPISODE_ID en ", nombre_objeto, ".")
+  }
+
+  names(datos)[posicion_evento] <- "EVENT_ID"
+  names(datos)[posicion_episodio] <- "EPISODE_ID"
+  datos
+}
+
 base_desarrollo <- adaptar_nombres(base_desarrollo)
+base_desarrollo <- normalizar_identificadores(base_desarrollo,
+                                              "base_desarrollo")
 base_desarrollo$EVENT_ID <- as.character(base_desarrollo$EVENT_ID)
 base_desarrollo$EPISODE_ID <- as.character(base_desarrollo$EPISODE_ID)
-particiones$EVENT_ID <- as.character(particiones$EVENT_ID)
-particiones$EPISODE_ID <- as.character(particiones$EPISODE_ID)
 
-# Solo las 10 variables aceptadas por el diccionario.
+# Si las particiones no traen los ID, las armo por año y episodio.
+nombres_particiones <- toupper(names(particiones))
+particiones_tienen_ids <- all(
+  c("EVENT_ID", "EPISODE_ID") %in% nombres_particiones
+)
+
+if (particiones_tienen_ids) {
+  particiones <- normalizar_identificadores(particiones, "particiones")
+  particiones$EVENT_ID <- as.character(particiones$EVENT_ID)
+  particiones$EPISODE_ID <- as.character(particiones$EPISODE_ID)
+  cat("\nSE USARON LAS PARTICIONES POR EVENTO DEL PAQUETE COMUN.\n")
+} else {
+  if (!"year" %in% names(base_desarrollo)) {
+    stop("No se puede reconstruir las ventanas porque falta la variable year.")
+  }
+  if (anyNA(base_desarrollo$year)) {
+    stop("No se puede reconstruir las ventanas porque existen años faltantes.")
+  }
+
+  # Un episodio siempre queda en un solo grupo, aunque pase de un año a otro.
+  base_para_particiones <- base_desarrollo %>%
+    group_by(EPISODE_ID) %>%
+    mutate(year_episode = min(as.integer(year))) %>%
+    ungroup()
+
+  crear_ventana <- function(datos, nombre, anios_train, anio_valid) {
+    train <- datos %>%
+      filter(year_episode %in% anios_train) %>%
+      transmute(
+        EVENT_ID,
+        EPISODE_ID,
+        year = as.integer(year),
+        particion = nombre,
+        rol = "train"
+      )
+
+    valid <- datos %>%
+      filter(year_episode == anio_valid) %>%
+      transmute(
+        EVENT_ID,
+        EPISODE_ID,
+        year = as.integer(year),
+        particion = nombre,
+        rol = "valid"
+      )
+
+    bind_rows(train, valid)
+  }
+
+  particiones <- bind_rows(
+    crear_ventana(base_para_particiones, "V1", 2018, 2019),
+    crear_ventana(base_para_particiones, "V2", 2018:2019, 2020),
+    crear_ventana(base_para_particiones, "V3", 2018:2020, 2021)
+  )
+
+  particiones$EVENT_ID <- as.character(particiones$EVENT_ID)
+  particiones$EPISODE_ID <- as.character(particiones$EPISODE_ID)
+
+  cat(
+    "\nEL ARCHIVO DE PARTICIONES NO TENIA IDENTIFICADORES. ",
+    "LAS TRES VENTANAS FUERON RECONSTRUIDAS POR AÑO Y EPISODIO.\n",
+    sep = ""
+  )
+}
+
+# Uso las variables acordadas para M2.
 variables_modelo <- c(
   "event_type", "magnitude", "mag_origen", "dur_seg", "mes_num",
   "hora_inicio", "state", "wfo", "begin_lat", "begin_lon"
@@ -77,9 +192,8 @@ if (anyNA(base_desarrollo$dano_usd) ||
 cat("\nEVENTOS DE DESARROLLO:", nrow(base_desarrollo), "\n")
 print(particiones %>% count(particion, rol, year))
 
-
-# 2. VENTANAS TEMPORALES -----------------------------------------------------
-# V1: 2018 -> 2019; V2: 2018-2019 -> 2020; V3: 2018-2020 -> 2021.
+# 2. VENTANAS ---------------------------------------------------------------
+# Entreno con años anteriores y valido con el año siguiente.
 train_list <- list()
 valid_list <- list()
 
@@ -105,9 +219,8 @@ for (i in 1:3) {
   }
 }
 
-
-# 3. PREPARAR LOS PREDICTORES ------------------------------------------------
-# Las medias, desvios, medianas y categorias se obtienen SOLO del train.
+# 3. PREPARAR LOS DATOS -----------------------------------------------------
+# Todo lo que se calcula aca sale del entrenamiento de cada ventana.
 preparar_datos <- function(train, valid, con_wfo = TRUE) {
   vars <- variables_modelo
   if (!con_wfo) vars <- setdiff(vars, "wfo")
@@ -115,8 +228,7 @@ preparar_datos <- function(train, valid, con_wfo = TRUE) {
   x_train <- train[, vars, drop = FALSE]
   x_valid <- valid[, vars, drop = FALSE]
 
-  # Magnitude tiene unidades distintas: granizo (pulgadas) y viento (nudos).
-  # Se estandariza por event_type con la media y desvio del entrenamiento.
+  # Estandarizo la magnitud por tipo de evento, porque usa distintas unidades.
   magnitud_train <- as.numeric(train$magnitude)
   magnitud_train[!is.finite(magnitud_train)] <- NA_real_
   medias <- tapply(magnitud_train, train$event_type, mean, na.rm = TRUE)
@@ -165,8 +277,7 @@ preparar_datos <- function(train, valid, con_wfo = TRUE) {
   list(train = x_train, valid = x_valid)
 }
 
-
-# 4. AJUSTE Y PODA: 20 CONFIGURACIONES ---------------------------------------
+# 4. AJUSTAR LOS ARBOLES ----------------------------------------------------
 grilla <- expand.grid(cp = c(0, 0.001, 0.003, 0.01, 0.03),
                       maxdepth = c(4, 7), minbucket = c(10, 30))
 grilla$configuracion <- paste0("C", sprintf("%02d", seq_len(nrow(grilla))))
@@ -176,8 +287,7 @@ predicciones <- list()
 divisiones <- list()
 k <- 0
 
-# WFO esta admitida, pero el diccionario pide comprobar que no cambie
-# demasiado los resultados al quitarla (puede reflejar el reporte).
+# Pruebo con y sin WFO, y con la respuesta original y log1p.
 for (con_wfo in c(TRUE, FALSE)) {
   escenario <- ifelse(con_wfo, "con_wfo", "sin_wfo")
   preparados <- lapply(1:3, function(i) {
@@ -249,7 +359,7 @@ tolerancia <- configuracion$tolerancia_MAE
 if (is.null(tolerancia)) tolerancia <- configuracion$tolerancia_mae_parsimonia
 if (is.null(tolerancia)) tolerancia <- 0.01
 
-# Si dos opciones estan dentro del 1% del menor MAE, gana la mas simple.
+# Si el MAE cambia menos de un 1%, me quedo con el arbol mas simple.
 configuraciones_elegidas <- resumen_busqueda %>%
   group_by(uso_wfo, variante_respuesta) %>%
   filter(MAE <= min(MAE) * (1 + tolerancia)) %>%
@@ -273,7 +383,6 @@ divisiones_elegidas <- bind_rows(divisiones) %>%
             by = c("uso_wfo", "variante_respuesta", "configuracion"))
 print(divisiones_elegidas)
 
-
 # 5. RESULTADOS Y SENSIBILIDADES --------------------------------------------
 tabla_ventanas_m2 <- predicciones_elegidas %>%
   group_by(uso_wfo, variante_respuesta, particion) %>%
@@ -283,7 +392,7 @@ tabla_ventanas_m2 <- predicciones_elegidas %>%
 cat("\nERROR POR VENTANA: ORIGINAL, LOG1P, CON Y SIN WFO\n")
 print(tabla_ventanas_m2, n = Inf)
 
-# Elegir el modelo final usando SOLO las validaciones de 2019, 2020 y 2021.
+# Elijo el M2 final usando las tres validaciones.
 mejor <- configuraciones_elegidas %>%
   filter(MAE <= min(MAE) * (1 + tolerancia)) %>%
   arrange(hojas_promedio, MAE) %>%
@@ -299,7 +408,34 @@ predicciones_m2_final <- predicciones_elegidas %>%
          variante_respuesta, y_observado, y_predicho) %>%
   mutate(error_absoluto = abs(y_observado - y_predicho))
 
-# Dos referencias: mediana general y mediana segun el tipo de evento.
+# Dejo las dos respuestas con el mismo uso de WFO.
+# Cada una conserva su propia configuracion.
+predicciones_m2_ambas <- predicciones_elegidas %>%
+  filter(uso_wfo == mejor$uso_wfo) %>%
+  left_join(
+    configuraciones_elegidas %>%
+      select(uso_wfo, variante_respuesta, configuracion,
+             cp, maxdepth, minbucket),
+    by = c("uso_wfo", "variante_respuesta", "configuracion")
+  ) %>%
+  mutate(error_absoluto = abs(y_observado - y_predicho))
+
+# Cada evento debe tener una prediccion original y otra log1p.
+claves_m2 <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion")
+n_validaciones_m2 <- sum(sapply(valid_list, nrow))
+
+if (!identical(sort(unique(predicciones_m2_ambas$variante_respuesta)),
+               c("log1p", "original")) ||
+    nrow(predicciones_m2_ambas) != 2 * n_validaciones_m2 ||
+    any(table(predicciones_m2_ambas$variante_respuesta) != n_validaciones_m2) ||
+    anyDuplicated(predicciones_m2_ambas[
+      c(claves_m2, "variante_respuesta")
+    ]) ||
+    anyNA(predicciones_m2_ambas$cp)) {
+  stop("Las predicciones originales y log1p no coinciden con las validaciones.")
+}
+
+# Comparo con dos formas simples de predecir usando la mediana.
 referencias <- lapply(1:3, function(i) {
   train <- train_list[[i]]
   valid <- valid_list[[i]]
@@ -325,7 +461,7 @@ resultados_grupos <- predicciones_elegidas %>%
 cat("\nMAE Y RMSE POR TIPO DE EVENTO Y MEDICION\n")
 print(resultados_grupos, n = Inf)
 
-# Extremos definidos por el percentil 99 de CADA entrenamiento.
+# El percentil 99 se calcula de nuevo en cada entrenamiento.
 umbrales <- data.frame(
   particion = paste0("V", 1:3),
   umbral = sapply(train_list, function(d) {
@@ -368,9 +504,8 @@ print(ggplot(configuraciones_elegidas,
         labs(title = "Sensibilidad: con y sin WFO",
              x = "Variables usadas", y = "MAE (dolares)", fill = "Respuesta"))
 
-
-# 6. ARBOL FINAL (2018-2021) ------------------------------------------------
-# Con los parametros seleccionados, se reajusta usando todo desarrollo.
+# 6. ARBOL FINAL ------------------------------------------------------------
+# Uso todos los datos de 2018 a 2021 con la configuracion elegida.
 x_final <- preparar_datos(base_desarrollo, base_desarrollo[0, ],
                          con_wfo = (mejor$uso_wfo == "con_wfo"))$train
 x_final$y <- if (mejor$variante_respuesta == "original") {
@@ -414,7 +549,7 @@ plot(arbol_final, uniform = TRUE, margin = 0.1,
                    "Arbol M2 (hojas en log1p)", "Arbol M2 (hojas en dolares)"))
 text(arbol_final, use.n = TRUE, cex = 0.7)
 
-# Funcion para predecir otros eventos con reglas aprendidas en desarrollo.
+# Esto permite usar el arbol final con eventos nuevos.
 predecir_m2 <- function(nuevos_eventos) {
   nuevos_eventos <- adaptar_nombres(nuevos_eventos)
   x_nuevo <- preparar_datos(base_desarrollo, nuevos_eventos,
@@ -424,26 +559,23 @@ predecir_m2 <- function(nuevos_eventos) {
   pmax(0, pred)
 }
 
-
 # 7. MIS PREDICCIONES DE M2 -------------------------------------------------
 cat("\nPREDICCIONES M2 EN VALIDACION\n")
 cat("Total eventos:", nrow(predicciones_m2_final), "\n")
+cat("Predicciones por respuesta:", n_validaciones_m2, "\n")
 print(head(predicciones_m2_final, 15))
 cat("\nRESUMEN DE PREDICCIONES EN DOLARES\n")
 print(summary(predicciones_m2_final$y_predicho))
 cat("MAE total M2:", round(mean(predicciones_m2_final$error_absoluto), 2), "USD\n")
-# View(predicciones_m2_final)   # Descomentar si quieres revisar todas las filas.
 
-
-# 8. COMPARAR CON LOS OTROS MODELOS (CUANDO ESTEN LISTOS) ----------------------
-# Cargar antes pred_referencia, pred_m1 y pred_m3; luego activar integrar_ahora.
+# 8. COMPARACION CON LOS OTROS MODELOS (OPCIONAL) ---------------------------
+# Cuando esten las otras predicciones, se puede activar integrar_ahora.
 if (integrar_ahora) {
   if (!all(c("pred_referencia", "pred_m1", "pred_m3") %in% ls())) {
     stop("Faltan las predicciones de referencia, M1 o M3.")
   }
-  # Para la sensibilidad integrada dejamos las DOS respuestas de M2.
-  m2_para_comparar <- predicciones_elegidas %>%
-    filter(uso_wfo == mejor$uso_wfo)
+  # Para M2 comparo las dos respuestas.
+  m2_para_comparar <- predicciones_m2_ambas
   claves <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion")
   columnas <- c(claves, "modelo", "variante_respuesta", "y_observado", "y_predicho")
   lista_modelos <- list(pred_referencia, pred_m1, m2_para_comparar, pred_m3)
@@ -465,7 +597,13 @@ if (integrar_ahora) {
   }
   todas <- bind_rows(lista_modelos)
 
-  esperados <- particiones %>% filter(rol == "valid") %>%
+  esperados <- particiones %>%
+    filter(rol == "valid") %>%
+    mutate(anio_validacion = case_when(
+      particion == "V1" ~ "2019",
+      particion == "V2" ~ "2020",
+      particion == "V3" ~ "2021"
+    )) %>%
     transmute(across(all_of(claves), as.character))
   for (m in unique(todas$modelo)) {
     for (v in unique(todas$variante_respuesta[todas$modelo == m])) {
@@ -526,14 +664,16 @@ if (integrar_ahora) {
                y = "MAE (dolares)", fill = "Respuesta"))
 }
 
-
-# 9. RESERVA 2022-2023: NO ACTIVAR HASTA EL CIERRE ----------------------------
+# 9. RESERVA 2022-2023 (TODAVIA NO SE USA) ----------------------------------
 if (evaluar_reserva) {
   base_reserva <- readRDS("datos_comunes/base_prueba_sin_respuesta.rds")
   if (any(c("dano_usd", "damage_property_usd") %in% names(base_reserva))) {
     stop("La reserva de prediccion debe venir SIN respuesta.")
   }
   base_reserva <- adaptar_nombres(base_reserva)
+  base_reserva <- normalizar_identificadores(base_reserva, "base_reserva")
+  base_reserva$EVENT_ID <- as.character(base_reserva$EVENT_ID)
+  base_reserva$EPISODE_ID <- as.character(base_reserva$EPISODE_ID)
   predicciones_reserva_m2 <- data.frame(
     EVENT_ID = base_reserva$EVENT_ID,
     EPISODE_ID = base_reserva$EPISODE_ID,
@@ -544,5 +684,254 @@ if (evaluar_reserva) {
   print(head(predicciones_reserva_m2, 15))
 }
 
-# Cuando el grupo lo necesite, se puede guardar expresamente:
-# saveRDS(predicciones_m2_final, "predicciones_desarrollo_m2.rds")
+# 10. GUARDAR RESULTADOS DEL MODELO M2 --------------------------------------
+
+carpeta_resultados <- "integrante2_PE/resultados_m2"
+dir.create(carpeta_resultados, recursive = TRUE, showWarnings = FALSE)
+
+# Guardo la busqueda completa y el modelo que elegi.
+write.csv(tabla_busqueda,
+          file.path(carpeta_resultados, "hiperparametros_busqueda_m2.csv"),
+          row.names = FALSE)
+write.csv(resumen_busqueda,
+          file.path(carpeta_resultados, "resumen_hiperparametros_m2.csv"),
+          row.names = FALSE)
+write.csv(mejor,
+          file.path(carpeta_resultados, "hiperparametros_elegidos_m2.csv"),
+          row.names = FALSE)
+saveRDS(mejor, file.path(carpeta_resultados, "configuracion_elegida_m2.rds"))
+
+# Las dos respuestas van juntas en el mismo CSV: 9.967 de cada una.
+# Las predicciones estan en dolares, no en escala logaritmica.
+predicciones_exportar_m2 <- predicciones_m2_ambas %>%
+  select(
+    EVENT_ID,
+    EPISODE_ID,
+    particion,
+    anio_validacion,
+    modelo,
+    variante_respuesta,
+    uso_wfo,
+    configuracion,
+    cp,
+    maxdepth,
+    minbucket,
+    y_observado,
+    y_predicho,
+    error_absoluto
+  )
+
+if (nrow(predicciones_exportar_m2) != 2 * n_validaciones_m2 ||
+    anyNA(predicciones_exportar_m2$y_predicho) ||
+    anyDuplicated(predicciones_exportar_m2[
+      c(claves_m2, "variante_respuesta")
+    ])) {
+  stop("El CSV debe contener una fila por evento y por respuesta.")
+}
+
+write.csv(predicciones_exportar_m2,
+          file.path(carpeta_resultados, "predicciones_m2.csv"),
+          row.names = FALSE)
+
+# Error del M2 elegido en cada ventana.
+errores_finales_ventanas_m2 <- predicciones_m2_final %>%
+  group_by(particion, anio_validacion) %>%
+  summarise(
+    n = n(),
+    MAE = mean(abs(y_observado - y_predicho)),
+    RMSE = sqrt(mean((y_observado - y_predicho)^2)),
+    .groups = "drop"
+  )
+
+write.csv(errores_finales_ventanas_m2,
+          file.path(carpeta_resultados, "errores_ventanas_m2.csv"),
+          row.names = FALSE)
+
+# Guardo las comparaciones con y sin WFO, y original frente a log1p.
+write.csv(tabla_ventanas_m2,
+          file.path(carpeta_resultados, "sensibilidad_escenarios_m2.csv"),
+          row.names = FALSE)
+
+sensibilidad_wfo_m2 <- configuraciones_elegidas %>%
+  select(
+    uso_wfo,
+    variante_respuesta,
+    configuracion,
+    cp,
+    maxdepth,
+    minbucket,
+    MAE,
+    RMSE,
+    sd_MAE,
+    hojas_promedio,
+    segundos_total
+  )
+
+write.csv(sensibilidad_wfo_m2,
+          file.path(carpeta_resultados, "sensibilidad_wfo_m2.csv"),
+          row.names = FALSE)
+write.csv(resultados_grupos,
+          file.path(carpeta_resultados, "sensibilidad_subgrupos_m2.csv"),
+          row.names = FALSE)
+write.csv(resultados_extremos,
+          file.path(carpeta_resultados, "sensibilidad_extremos_m2.csv"),
+          row.names = FALSE)
+
+# Guardo el error de las distintas configuraciones de poda.
+curva_poda_m2 <- resumen_busqueda %>%
+  select(
+    uso_wfo,
+    variante_respuesta,
+    configuracion,
+    cp,
+    maxdepth,
+    minbucket,
+    MAE,
+    RMSE,
+    sd_MAE,
+    hojas_promedio
+  ) %>%
+  arrange(
+    uso_wfo,
+    variante_respuesta,
+    cp,
+    maxdepth,
+    minbucket
+  )
+
+write.csv(curva_poda_m2,
+          file.path(carpeta_resultados, "curva_poda_m2.csv"),
+          row.names = FALSE)
+write.csv(divisiones_elegidas,
+          file.path(carpeta_resultados, "divisiones_arbol_m2.csv"),
+          row.names = FALSE)
+write.csv(tabla_hojas,
+          file.path(carpeta_resultados, "hojas_arbol_final_m2.csv"),
+          row.names = FALSE)
+
+# Si el arbol tiene divisiones, guardo la importancia de variables.
+
+if (exists("importancia")) {
+  write.csv(importancia,
+            file.path(carpeta_resultados, "importancia_m2.csv"),
+            row.names = FALSE)
+} else {
+  cat(
+    "\nEl árbol final no tiene divisiones;",
+    "por eso no se creó importancia_m2.csv.\n"
+  )
+}
+
+# Tiempo que tomo cada ajuste.
+tiempos_m2 <- tabla_busqueda %>%
+  select(
+    uso_wfo,
+    variante_respuesta,
+    configuracion,
+    cp,
+    maxdepth,
+    minbucket,
+    particion,
+    n,
+    segundos
+  )
+
+write.csv(tiempos_m2,
+          file.path(carpeta_resultados, "tiempos_m2.csv"),
+          row.names = FALSE)
+
+# Guardo el arbol final y los datos que necesito para usarlo despues.
+saveRDS(arbol_final, file.path(carpeta_resultados, "arbol_final_m2.rds"))
+modelo_completo_m2 <- list(
+  modelo = "M2_arbol_regresion",
+  arbol = arbol_final,
+  configuracion = mejor,
+  variables = variables_modelo,
+  anios_entrenamiento = 2018:2021
+)
+
+saveRDS(modelo_completo_m2,
+        file.path(carpeta_resultados, "modelo_completo_m2.rds"))
+
+# La reserva solo se guarda cuando el grupo la active.
+
+if (
+  evaluar_reserva &&
+  exists("predicciones_reserva_m2")
+) {
+  write.csv(predicciones_reserva_m2,
+            file.path(carpeta_resultados, "predicciones_reserva_m2.csv"),
+            row.names = FALSE)
+}
+
+# Listo: muestro los archivos que quedaron guardados.
+cat("\nRESULTADOS DEL MODELO M2 GUARDADOS\n")
+cat("Carpeta:", carpeta_resultados, "\n")
+print(list.files(carpeta_resultados))
+
+# 11. REVISAR QUE LAS PREDICCIONES ESTEN BIEN -------------------------------
+
+predicciones_revisar <- read.csv(
+  file.path(carpeta_resultados, "predicciones_m2.csv"),
+  stringsAsFactors = FALSE)
+configuracion_revisar <- readRDS(
+  file.path(carpeta_resultados, "configuracion_elegida_m2.rds"))
+
+# Cada variante debe tener la cantidad de eventos que se validaron.
+n_predicciones_esperadas <- sum(particiones$rol == "valid")
+
+cat("\nREVISION DE PREDICCIONES\n")
+cat("Por respuesta:", n_predicciones_esperadas, "\n")
+cat("Total en predicciones_m2.csv:", 2 * n_predicciones_esperadas, "\n")
+print(table(predicciones_revisar$variante_respuesta))
+
+stopifnot(nrow(predicciones_revisar) == 2 * n_predicciones_esperadas)
+stopifnot(
+  identical(sort(unique(predicciones_revisar$variante_respuesta)),
+            c("log1p", "original"))
+)
+stopifnot(
+  all(table(predicciones_revisar$variante_respuesta) ==
+        n_predicciones_esperadas)
+)
+
+stopifnot(!anyNA(predicciones_revisar$y_observado),
+          !anyNA(predicciones_revisar$y_predicho),
+          all(is.finite(predicciones_revisar$y_observado)),
+          all(is.finite(predicciones_revisar$y_predicho)),
+          all(predicciones_revisar$y_observado >= 0),
+          all(predicciones_revisar$y_predicho >= 0))
+
+stopifnot(!anyDuplicated(predicciones_revisar[
+  c("EVENT_ID", "particion", "variante_respuesta")
+]))
+stopifnot(all(predicciones_revisar$uso_wfo == configuracion_revisar$uso_wfo))
+
+stopifnot(
+  isTRUE(all.equal(
+    predicciones_revisar$error_absoluto,
+    abs(predicciones_revisar$y_observado - predicciones_revisar$y_predicho),
+    tolerance = 1e-9
+  ))
+)
+
+# El M2 elegido tambien debe estar dentro de estas predicciones.
+predicciones_final_csv <- predicciones_revisar %>%
+  filter(variante_respuesta == configuracion_revisar$variante_respuesta) %>%
+  mutate(across(all_of(claves_m2), as.character)) %>%
+  select(all_of(claves_m2), y_predicho)
+
+comparacion_final <- predicciones_m2_final %>%
+  mutate(across(all_of(claves_m2), as.character)) %>%
+  select(all_of(claves_m2), y_predicho) %>%
+  left_join(predicciones_final_csv, by = claves_m2,
+            suffix = c("_modelo", "_csv"))
+
+stopifnot(
+  nrow(comparacion_final) == n_predicciones_esperadas,
+  !anyNA(comparacion_final$y_predicho_csv),
+  all(abs(comparacion_final$y_predicho_modelo -
+          comparacion_final$y_predicho_csv) < 1e-6)
+)
+
+cat("\nTODAS LAS COMPROBACIONES M2 FUERON SUPERADAS\n")
