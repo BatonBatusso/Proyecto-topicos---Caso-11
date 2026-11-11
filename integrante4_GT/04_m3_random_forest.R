@@ -330,7 +330,7 @@ resumen_busqueda <- tabla_busqueda %>%
             RMSE = sqrt(sum(n * RMSE^2) / sum(n)),
             segundos_total = sum(segundos), .groups = "drop")
 
-# Se elige la configuracion de menor MAE ponderado por n (igual que M2).
+# Se elige la configuracion de menor MAE ponderado por n.
 configuracion_elegida_m3 <- resumen_busqueda %>%
   group_by(variante_respuesta) %>%
   arrange(MAE, sd_MAE, .by_group = TRUE) %>%
@@ -433,7 +433,8 @@ resultados_extremos_m3 <- predicciones_m3 %>%
                                 y_observado >= umbral ~ "Extremo",
                                 TRUE ~ "Positivo_no_extremo")) %>%
   group_by(uso_wfo, variante_respuesta, particion, grupo_dano) %>%
-  summarise(n = n(), MAE = mean(error_absoluto),
+  summarise(MAE = mean(error_absoluto),
+            RMSE = sqrt(mean((y_predicho - y_observado)^2)),
             suma_errores = sum(error_absoluto),
             sesgo = mean(y_predicho - y_observado), .groups = "drop") %>%
   group_by(uso_wfo, variante_respuesta, particion) %>%
@@ -444,7 +445,7 @@ print(resultados_extremos_m3, n = Inf)
 
 # Sensibilidad 1: importancia original vs log1p (modelo con WFO)
 importancia_promedio <- importancia_m3 %>%
-  filter(uso_wfo == "con_wfo") %>%
+  filter(uso_wfo == "sin_wfo") %>%
   group_by(variante_respuesta, variable) %>%
   summarise(importancia = mean(importancia), .groups = "drop") %>%
   group_by(variante_respuesta) %>%
@@ -458,7 +459,7 @@ imp_ancho <- importancia_promedio %>%
 
 spearman_importancia <- cor(imp_ancho$ranking_original, imp_ancho$ranking_log1p,
                             method = "spearman")
-cat("\nIMPORTANCIA (PROMEDIO DE VENTANAS, CON WFO)\n")
+cat("\nIMPORTANCIA (PROMEDIO DE VENTANAS, SIN WFO)\n")
 print(imp_ancho %>% arrange(ranking_original), n = Inf)
 cat("Spearman entre rankings (original vs log1p):", round(spearman_importancia, 3), "\n")
 
@@ -472,7 +473,7 @@ cat("\nTIEMPOS DE AJUSTE (segundos, totales por escenario)\n")
 print(tiempos_m3 %>% group_by(uso_wfo, variante_respuesta) %>%
         summarise(segundos = sum(segundos), .groups = "drop"))
 
-# Modelo M3 seleccionado en desarrollo (menor MAE ponderado, con WFO)
+# Modelo M3 seleccionado en desarrollo (menor MAE ponderado, sin WFO)
 mejor_m3 <- configuracion_elegida_m3 %>% arrange(MAE) %>% slice(1)
 cat("\nMODELO M3 SELECCIONADO\n"); print(mejor_m3)
 
