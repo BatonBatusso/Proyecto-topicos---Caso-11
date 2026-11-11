@@ -11,7 +11,7 @@ scripts <- c("preparacion_base_datos.R",
              "integrante1_MB/resumen_tablas_informe.R",
              "integrante2_PE/M2_patito.R", 
              "integrante3_LM/archivo_inicial.R",             
-             "integrante4_GT/m3_random_forest.R",
+             "integrante4_GT/04_m3_random_forest.R",
              "integrante1_MB/comparacion_modelos_new.R")
 scripts <- scripts[file.exists(scripts)]
 t_ini <- Sys.time()
