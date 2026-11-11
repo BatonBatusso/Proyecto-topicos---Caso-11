@@ -8,13 +8,13 @@ library(ranger)
 library(ggplot2)
 
 # Cambiar a TRUE solamente cuando corresponda.
-evaluar_reserva  <- FALSE   # 2022-2023: NO activar hasta el cierre
+evaluar_reserva  <- TRUE   # 2022-2023: NO activar hasta el cierre
 correr_con_source <- FALSE  # sensibilidad opcional: agrega SOURCE (si el equipo la acuerda)
 
 # Rutas (relativas a la carpeta desde donde se ejecuta; ajustar si hace falta,
 # por ejemplo "../datos_comunes" si se ejecuta desde integrante4_GT)
-dir_comun  <- "../datos_comunes"
-dir_salida <- "resultados/m3"
+dir_comun  <- "datos_comunes"
+dir_salida <- "integrante4_GT/resultados/m3"
 dir.create(dir_salida, recursive = TRUE, showWarnings = FALSE)
 
 # Presupuesto de busqueda
@@ -503,7 +503,7 @@ saveRDS(list(fecha = Sys.time(), R = R.version.string,
 ajustar_predecir_m3_final <- function(df_desarrollo, df_nuevos,
                                       config_elegida = configuracion_elegida_m3,
                                       variante = c("original", "log1p"),
-                                      con_wfo = TRUE) {
+                                      con_wfo = FALSE) {
   variante <- match.arg(variante)
   cfg <- config_elegida %>% filter(variante_respuesta == variante) %>% slice(1)
   df_desarrollo <- adaptar_nombres(df_desarrollo)
@@ -525,14 +525,84 @@ ajustar_predecir_m3_final <- function(df_desarrollo, df_nuevos,
 
 # 10. RESERVA 2022-2023: NO ACTIVAR HASTA EL CIERRE ---------------------------
 if (evaluar_reserva) {
-  base_reserva <- leer_comun("base_prueba_sin_respuesta.rds")
+  base_reserva <- readRDS(file.path(dir_comun, "base_prueba_sin_respuesta.rds"))
   if (any(c("dano_usd", "damage_property_usd") %in% names(base_reserva))) {
     stop("La reserva de prediccion debe venir SIN respuesta.")
   }
   predicciones_reserva_m3 <- ajustar_predecir_m3_final(
-    base_desarrollo, base_reserva, variante = mejor_m3$variante_respuesta)
+    base_desarrollo, base_reserva, variante = mejor_m3$variante_respuesta,
+    con_wfo = FALSE)
   cat("\nPREDICCIONES M3 PARA 2022-2023 (SIN VER RESPUESTA)\n")
   print(head(predicciones_reserva_m3, 15))
   saveRDS(predicciones_reserva_m3, file.path(dir_salida, "m3_predicciones_reserva.rds"))
 }
 
+
+# 11. TABLA DE RESERVA PARA LATEX --------------------------------------------
+dir_sellado <- "datos_prueba_sellado"
+
+resp <- readRDS(file.path(dir_sellado, "respuesta_prueba.rds")) %>% as.data.frame()
+resp <- adaptar_nombres(resp)                         # event_id -> character
+
+bp <- adaptar_nombres(readRDS(file.path(dir_comun, "base_prueba_sin_respuesta.rds")))
+if (!"year" %in% names(bp)) {
+  sl <- readRDS(file.path(dir_sellado, "storm_limpio.rds"))
+  anios <- data.frame(event_id = as.character(sl$event_id), year = sl$year)
+} else {
+  anios <- data.frame(event_id = bp$event_id, year = bp$year)
+}
+
+pred_res <- readRDS(file.path(dir_salida, "m3_predicciones_reserva.rds")) %>%
+  mutate(event_id = as.character(event_id), episode_id = as.character(episode_id))
+
+eval_res <- pred_res %>%
+  select(event_id, episode_id, y_predicho, variante_respuesta) %>%
+  inner_join(resp %>% select(event_id, dano_informado, dano_usd), by = "event_id") %>%
+  inner_join(anios, by = "event_id") %>%
+  filter(dano_informado) %>%
+  mutate(y_ref = 0)                                   # referencia: mediana = 0
+
+cat("\nFilas predichas:", nrow(pred_res), "| evaluadas (n agrupado):", nrow(eval_res), "\n")
+cat("Eventos por año:\n"); print(table(eval_res$year))
+cat("Variante usada:", unique(eval_res$variante_respuesta), "\n")
+cat("Resumen y_predicho:\n"); print(summary(eval_res$y_predicho))
+cat("Resumen dano_usd:\n");   print(summary(eval_res$dano_usd))
+cat("Proporcion de ceros observados:", mean(eval_res$dano_usd == 0), "\n")
+cat("Control: media de dano_usd =", mean(eval_res$dano_usd), "(debe igualar el MAE de la referencia agrupada)\n")
+
+metricas <- function(d, pred) {
+  e <- pred - d$dano_usd
+  data.frame(n = nrow(d), MAE = mean(abs(e)), RMSE = sqrt(mean(e^2)), Sesgo = mean(e))
+}
+periodos <- list("2022" = filter(eval_res, year == 2022),
+                 "2023" = filter(eval_res, year == 2023),
+                 "Agrupado" = eval_res)
+
+tabla_ref <- bind_rows(lapply(names(periodos), function(p)
+  cbind(Procedimiento = "Referencia", Periodo = p,
+        metricas(periodos[[p]], periodos[[p]]$y_ref))))
+tabla_m3 <- bind_rows(lapply(names(periodos), function(p)
+  cbind(Procedimiento = "M3", Periodo = p,
+        metricas(periodos[[p]], periodos[[p]]$y_predicho))))
+
+# Delta MAE (M3 - referencia) con IC 95% por bootstrap por EPISODIO
+set.seed(semilla)
+B_boot <- 2000
+delta_ic <- function(d) {
+  eps <- split(seq_len(nrow(d)), d$episode_id)
+  dif <- abs(d$y_predicho - d$dano_usd) - abs(d$y_ref - d$dano_usd)
+  boot <- replicate(B_boot, mean(dif[unlist(eps[sample(length(eps), replace = TRUE)])]))
+  data.frame(delta = mean(dif), ic_inf = unname(quantile(boot, .025)),
+             ic_sup = unname(quantile(boot, .975)))
+}
+delta_tab <- bind_rows(lapply(names(periodos), function(p)
+  cbind(Periodo = p, delta_ic(periodos[[p]]))))
+
+options(width = 200)
+cat("\n=== METRICAS RESERVA ===\n")
+print(rbind(tabla_ref, tabla_m3), digits = 10, row.names = FALSE)
+cat("\n=== DELTA MAE (M3 - REFERENCIA), IC 95% bootstrap por episodio ===\n")
+print(delta_tab, digits = 10, row.names = FALSE)
+
+saveRDS(list(ref = tabla_ref, m3 = tabla_m3, delta = delta_tab),
+        file.path(dir_salida, "m3_tabla_reserva.rds"))
