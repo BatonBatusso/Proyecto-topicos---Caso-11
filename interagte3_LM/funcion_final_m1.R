@@ -20,6 +20,7 @@ aprender_preproc_m1 <- function(df_train) {
   list(
     est_mag        = est_mag,
     mediana_dur    = median(df_train$dur_seg,   na.rm = TRUE),
+    dur_max        = max(df_train$dur_seg,      na.rm = TRUE),
     mediana_lat    = median(df_train$begin_lat, na.rm = TRUE),
     mediana_lon    = median(df_train$begin_lon, na.rm = TRUE),
     niveles_tipo   = levels(df_train$event_type),
@@ -38,7 +39,7 @@ aplicar_preproc_m1 <- function(df, params) {
       event_type = factor(tipo_chr, levels = params$niveles_tipo),
       mag_origen = factor(mag_origen, levels = params$niveles_origen),
       state      = factor(state,      levels = params$niveles_st),
-      dur_seg    = coalesce(dur_seg,   params$mediana_dur),
+      dur_seg    = pmin(coalesce(dur_seg, params$mediana_dur), params$dur_max),
       begin_lat  = coalesce(begin_lat, params$mediana_lat),
       begin_lon  = coalesce(begin_lon, params$mediana_lon)
     ) %>%

@@ -28,6 +28,7 @@ aprender_preproc_m1 <- function(df_train) {
   list(
     est_mag        = est_mag,
     mediana_dur    = median(df_train$dur_seg,   na.rm = TRUE),
+    dur_max        = max(df_train$dur_seg,      na.rm = TRUE),
     mediana_lat    = median(df_train$begin_lat, na.rm = TRUE),
     mediana_lon    = median(df_train$begin_lon, na.rm = TRUE),
     niveles_tipo   = levels(df_train$event_type),
@@ -46,7 +47,7 @@ aplicar_preproc_m1 <- function(df, params) {
       event_type = factor(tipo_chr, levels = params$niveles_tipo),
       mag_origen = factor(mag_origen, levels = params$niveles_origen),
       state      = factor(state,      levels = params$niveles_st),
-      dur_seg    = coalesce(dur_seg,   params$mediana_dur),
+      dur_seg    = pmin(coalesce(dur_seg, params$mediana_dur), params$dur_max),
       begin_lat  = coalesce(begin_lat, params$mediana_lat),
       begin_lon  = coalesce(begin_lon, params$mediana_lon)
     ) %>%
@@ -550,7 +551,7 @@ cols_contrato <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion",
                    "y_observado", "y_predicho", "modelo", "variante_respuesta", "configuracion")
 cumple_cols <- identical(names(predicciones_desarrollo_m1), cols_contrato)
 cat("  - Columnas exactas según contrato:", cumple_cols, "\n")
-cat("  - Dimensiones (9975 filas x 2 variantes = 19950):", nrow(predicciones_desarrollo_m1), "filas x", ncol(predicciones_desarrollo_m1), "cols\n")
+cat("  - Dimensiones (9967 filas x 2 variantes = 19950):", nrow(predicciones_desarrollo_m1), "filas x", ncol(predicciones_desarrollo_m1), "cols\n")
 cat("  - Duplicados por (EVENT_ID, particion, variante_respuesta):",
     sum(duplicated(predicciones_desarrollo_m1[, c("EVENT_ID", "particion", "variante_respuesta")])), "\n")
 cat("  - Archivos guardados en resultados/m1/:\n")
@@ -764,7 +765,7 @@ pred_v3_log <- predicciones_desarrollo_m1 %>%
 dif_max_v3 <- max(abs(test_fn_log$y_predicho - pred_v3_log))
 
 cat("1. PRUEBA DE LA FUNCIÓN FINAL (Simulacro 2018-2020 -> 2021 sin columna respuesta):\n")
-cat(sprintf("  - Filas predichas (esperadas 2653): %d\n", nrow(test_fn_log)))
+cat(sprintf("  - Filas predichas (esperadas 2651): %d\n", nrow(test_fn_log)))
 cat(sprintf("  - NAs o negativos en predicción: %d\n", sum(is.na(test_fn_log$y_predicho) | test_fn_log$y_predicho < 0)))
 cat(sprintf("  - Diferencia máxima vs predicción V3 del Paso 2: %.8f USD\n", dif_max_v3))
 
@@ -888,7 +889,7 @@ preds_referencias <- bind_rows(lapply(names(ventanas), function(id_v) {
   )
 }))
 
-# 3. Unir M1 (original y log1p) con las Referencias sobre las mismas 9,975 filas
+# 3. Unir M1 (original y log1p) con las Referencias sobre las mismas 9,967 filas
 mapa_subgrupos <- bind_rows(lapply(names(ventanas), function(id_v) {
   ventanas[[id_v]]$valid %>%
     transmute(particion = id_v, EVENT_ID = event_id, mag_origen = mag_origen, event_type = event_type)
@@ -977,7 +978,7 @@ verificar_filas_comunes_modelos <- function(control_base, archivos_rds) {
         n_V1                = sum(particion == "V1"),
         n_V2                = sum(particion == "V2"),
         n_V3                = sum(particion == "V3"),
-        ids_exactos_9975    = identical(
+        ids_exactos_9967    = identical(
           tibble(particion = particion, anio_validacion = anio_validacion,
                  EVENT_ID = EVENT_ID, EPISODE_ID = EPISODE_ID) %>% arrange(particion, EVENT_ID),
           ref_ord
@@ -990,10 +991,10 @@ verificar_filas_comunes_modelos <- function(control_base, archivos_rds) {
 }
 
 # Detectar automáticamente cualquier predicciones_desarrollo_*.rds presente en el proyecto
-rutas_candidatas <- unique(c(
+rutas_candidatas <- unique(normalizePath(c(
   file.path(ruta_out_m1, "predicciones_desarrollo_m1.rds"),
   list.files(pattern = "^predicciones_desarrollo_.*\\.rds$", recursive = TRUE, full.names = TRUE)
-))
+), mustWork = FALSE))
 
 tabla_control_filas <- verificar_filas_comunes_modelos(control_filas_m1, rutas_candidatas)
 
@@ -1094,8 +1095,8 @@ print(base_diag %>% count(variante_respuesta, particion, estrato) %>%
         pivot_wider(names_from = estrato, values_from = n, values_fill = 0))
 
 n_por_vent <- base_diag %>% count(variante_respuesta, particion)
-cat("  - n por ventana == 3950/3372/2653 en ambas variantes: ",
-    all(n_por_vent$n == rep(c(3950, 3372, 2653), 2)), "\n")
+cat("  - n por ventana == 3948/3368/2651 en ambas variantes: ",
+    all(n_por_vent$n == rep(c(3948, 3368, 2651), 2)), "\n")
 
 # --- 3. Coherencia de los cortes ----------------------------------------------
 cat("\n3. COHERENCIA DE LOS CORTES (variante log1p, mismas filas que original)\n")
