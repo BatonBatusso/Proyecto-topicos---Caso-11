@@ -1,9 +1,7 @@
 # TOPICOS APLICADOS - CASO 11
 # M2: ARBOL DE REGRESION CON PODA
 # Los graficos se ven en RStudio. Los resultados se guardan al final.
-setwd(
-  "C:/Users/SuperUsuario/Proyecto-topicos---Caso-11"
-)
+
 library(dplyr)
 library(rpart)
 library(ggplot2)
