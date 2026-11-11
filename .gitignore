@@ -1,9 +1,10 @@
 # Carpetas a ignorar 
 pruebas
 datos_prueba_sellado
+ignorar
 
 # Archivos a ignorar
-eventos.csv
+*.csv
 LEEME.txt
 *.pdf
 .Rhistory
