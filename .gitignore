@@ -9,3 +9,6 @@ LEEME.txt
 *.pdf
 .Rhistory
 .Rproj.user
+
+# 2. Excepción: NO ignores este archivo específico
+!eventos.csv
