@@ -1,10 +1,8 @@
 # ENTRADAS: resultados/referencia/predicciones_desarrollo_referencia.rds, datos_comunes/*.rds,
 #           (opcional) resultados/integracion/predicciones_desarrollo.rds  [confirmar la ruta con la integrante 3]
 library(dplyr); library(tidyr); library(readr); library(ggplot2)
-getwd()
-list.files("R") 
-list.files(pattern = "ncertidumbre", recursive = TRUE, full.names = TRUE)
-source("Proyecto-topicos---Caso-11/integrante1_MB/analisis_incertidumbre.R", encoding = "UTF-8")
+
+source("integrante1_MB/analisis_incertidumbre.R", encoding = "UTF-8")
 dir.create("resultados/incertidumbre", recursive = TRUE, showWarnings = FALSE)
 dir.create("resultados/figuras", recursive = TRUE, showWarnings = FALSE)
 

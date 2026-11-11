@@ -11,7 +11,7 @@ storm <- read_csv(
   col_types = cols(
     .default = col_character(),
     
-    # Enteros / IDs numéricos
+    # Enteros / IDs numéricosdata:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAkCAYAAAD7PHgWAAADNUlEQVR4Xu2WWU8TURiG0XjjJf/DK+/BlRCUiFG5wCgYE0xQNCIJFIiURQsKNoJSFLrQlpZubJWt7CAhooAsLTsiCbLVQguhXJnXM60iHGhpESwmfZI3bWe+zPf0zJlzxsfHixcvXnaEJXvvSx87NCQrmnhpmlYwnykK3Qn6vMdJKmnA0OI6+B1jYL4nKXX+dI1HSZDXo3d2DcqBJbxpH0cikYyXNYTQdR6BzWYfZcl06P5mF1T0L6GgYwoJciIprQun6w8EdkvLMZasytdREuSNWwRL+k0o7JwGS9aIWHHtXfp6eyZGXJ0RI64xk2BzYiW1iCe30VGSVc3opQTlfSYIPswgjsg/lNTE0b32xANRtXnUuAYDmfB6ksEFewYWrOift6JvzkrmGpM19DAhUszIMb/bp1a3CTIRds2SP9EEcm023c9togVac9/sKuq/WFA7YUHNuAXVYxZUjZnxbtQM7YgZlcNmlA8vo2xoGaWGZWj0y1Drl6AaXNpRUPbZBNHHeSLZjPsCbSbd0y2iCrU/DItW6HYRrHAmOGAXLNkkWEwi/rSAeEUroviVL+i+LnPnbQUMxnXUTe4uWO6mYHHvd4i7F8FStiOyoCKX7u0St/PLtwuOU4IjfwTLHAgqHAhKbZJGJKo7QXrlhXJVx2kHp0TklbotyIziZkH7PHQsKOmx53FZF8J5mke0g1Nu5KodCFqcCmqIoJoIqlwQlBI5cY8RCWQUb+Zo7tEOTgl7qfwluHJgghJyi2Plbbieo3zN7EK0g1NCuYoDFSwiT3K0uBHXuMocurdLXMmWOxcc3UVwYy00bayFvwWZtTCSXwvSI5vu6zIhz2VbBSccCZrtghtLjXNBQdccIvK1uJwl59A93SI4U0oW6ZV9FSzonEFYbhmCn0n/fqu7yJHwLnAk2EtqiDwtmN8xTeabCkEcyf68LOyVwKdFtheHzfvxq7ZJXMqSI/CJOJqu/+ecTxdtEeQ2jSIoQ4qANNEtutYjnE0VouPrqk0wo06PgPQinEkVXKXrPMbpFIFtu0vR9hIxIQn/HF3jUfzYfN4pIunP5sOPLTxJnz8c2LYtHKEPe/Hyv/ETAJJsU8J+YoMAAAAASUVORK5CYII=
     BEGIN_YEARMONTH = col_integer(), BEGIN_DAY = col_integer(), BEGIN_TIME = col_integer(),
     END_YEARMONTH   = col_integer(), END_DAY   = col_integer(), END_TIME   = col_integer(),
     EPISODE_ID = col_double(), EVENT_ID = col_double(),
@@ -205,24 +205,16 @@ ausentes <- storm_limpio %>%
 print(ausentes)
 readr::write_csv(ausentes, "salidas/tabla_ausentes.csv")
 
-storm_limpio %>% summarise(
-  n = n(), informado = mean(dano_informado),
-  cero = mean(dano_usd == 0, na.rm = TRUE),
-  q50 = median(dano_usd, na.rm = TRUE),
-  q99 = quantile(dano_usd, .99, na.rm = TRUE),
-  max = max(dano_usd, na.rm = TRUE))
 
 
-# concentración: qué parte del daño total aportan los mayores eventos #SIN PARTICION (No implica ninguna decisión)
-storm_limpio %>% filter(dano_informado) %>% arrange(desc(dano_usd)) %>%
-  summarise(top10_share = sum(head(dano_usd, 10)) / sum(dano_usd),
-            top1pct_share = sum(head(dano_usd, ceiling(.01 * n()))) / sum(dano_usd))
+
+
 #El 58%.2 del daño económico. Para el 1% superior el porcentaje es 97.9%
 
 
 # concentración (solo desarrollo)
 dev <- storm_limpio %>% filter(dano_informado, year <= 2021)
-
+hist(dev$dano_usd)
 conc <- function(d) {
   d <- d %>% arrange(desc(dano_usd))
   tibble(n = nrow(d),
@@ -237,6 +229,19 @@ bind_rows(todos = conc(dev),
           dev %>% group_split(event_type) %>%
             setNames(sort(unique(dev$event_type))) %>% lapply(conc) %>% bind_rows(.id = "grupo"),
           .id = NULL)
+
+# concentración: qué parte del daño total aportan los mayores eventos 
+dev %>% summarise(
+  n = n(), informado = mean(dano_informado),
+  cero = mean(dano_usd == 0, na.rm = TRUE),
+  q50 = median(dano_usd, na.rm = TRUE),
+  q75 = quantile(dano_usd, .75, na.rm = TRUE),
+  max = max(dano_usd, na.rm = TRUE))
+
+dev %>% filter(dano_informado) %>% arrange(desc(dano_usd)) %>%
+  summarise(top10_share = sum(head(dano_usd, 10)) / sum(dano_usd),
+            top1pct_share = sum(head(dano_usd, ceiling(.01 * n()))) / sum(dano_usd))
+
 #Concentración de los daños económicos según categoría MAYOR ASIMETRIA
 # EN DAÑOS POR GRANIZO
 
@@ -318,6 +323,8 @@ ep_dev %>% summarise(episodios = n(),
                      todos_pos  = mean(n_pos == n))
 
 summary(lm(log1p(dano_usd) ~ factor(episode_id), data = dev))$adj.r.squared
+# Calcular el R2 ajustado solo para los eventos que sí tuvieron daño
+summary(lm(log1p(dano_usd) ~ factor(episode_id), data = subset(dev, dano_usd > 0)))$adj.r.squared
 #Entre los eventos de desarrollo, pertenecer al mismo episodio explica alrededor 
 #de un tercio de la variación de log(1+daño) (R² ajustado = 0,32). Las observaciones 
 #no son independientes, por lo que las particiones mantienen unidos los episodios 
@@ -414,6 +421,7 @@ resumen <- bind_rows(a, b) %>% group_by(nivel) %>%
 
 
 dir.create("salidas", showWarnings = FALSE)
+write_csv(resumen, "salidas/resumen_heterogeneidad_mismo_dano.csv")
 write_csv(bind_rows(a, b), "salidas/heterogeneidad_mismo_dano.csv")
 
 mixtos <- dev %>% group_by(episode_id) %>%
@@ -427,6 +435,16 @@ mixtos %>% group_by(event_type, con_dano) %>%
             mag_p75 = quantile(magnitude, .75, na.rm = TRUE),
             dur_mediana_min = median(dur_min, na.rm = TRUE), .groups = "drop")
 
+dev %>% 
+  filter(dano_usd > 0) %>% 
+  group_by(event_type) %>% 
+  summarise(
+    n = n(),
+    mag_p25 = quantile(magnitude, .25, na.rm = TRUE),
+    mag_mediana = median(magnitude, na.rm = TRUE),
+    mag_p75 = quantile(magnitude, .75, na.rm = TRUE),
+    iqr_global = mag_p75 - mag_p25
+  )
 # Comparación dentro del mismo episodio (controla el episodio)
 mixtos %>% group_by(episode_id, event_type, con_dano) %>%
   summarise(mag = median(magnitude, na.rm = TRUE), .groups = "drop") %>%
@@ -437,6 +455,17 @@ mixtos %>% group_by(episode_id, event_type, con_dano) %>%
             dif_mediana = median(dano_TRUE - dano_FALSE),
             pct_con_mayor_mag = round(100 * mean(dano_TRUE > dano_FALSE), 1))
 
+# Impacto de subir 0.25 pulgadas en el granizo global
+dev %>% filter(event_type == "Hail", dano_usd > 0) %>% 
+  mutate(rango_mag = cut(magnitude, breaks = seq(0, 5, by = 0.25))) %>% 
+  group_by(rango_mag) %>% 
+  summarise(n = n(), mediana_dano = median(dano_usd))
+
+# Impacto de subir 5 nudos en el viento global
+dev %>% filter(event_type == "Thunderstorm Wind", dano_usd > 0) %>% 
+  mutate(rango_mag = cut(magnitude, breaks = seq(40, 100, by = 5))) %>% 
+  group_by(rango_mag) %>% 
+  summarise(n = n(), mediana_dano = median(dano_usd))
 
 dir.create("datos_prueba_sellado", showWarnings = FALSE)
 saveRDS(storm_limpio, "datos_prueba_sellado/storm_limpio.rds")

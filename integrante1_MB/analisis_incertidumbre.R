@@ -55,14 +55,4 @@ diagnostico_grupos <- function(pred, atributos, umbral_extremo) {
   bind_rows(lapply(c("clase_dano", "state", "event_type", "mag_origen"), por))
 }
 
-##### PRUEBA DE FUNCIONES (Modelo simple) #####
 
-set.seed(3407)
-falso <- predicciones_ref %>% filter(modelo == "referencia_tipo") %>%
-  mutate(modelo = "modelo_simulado", y_predicho = y_predicho + runif(n(), 0, 5000))
-prueba <- bind_rows(predicciones_ref, falso)
-
-bootstrap_episodios(prueba, "modelo_simulado", B = 500)
-concentracion_error(prueba, "modelo_simulado")
-atributos <- base_desarrollo %>% select(event_id, state, event_type, mag_origen)
-diagnostico_grupos(prueba, atributos, configuracion_comun$umbral_extremo_usd)

@@ -48,7 +48,7 @@ diccionario <- bind_rows(
   d("cz_type", "Tipo de zona (condado, zona o marino)", "Predictor", AL_EVENTO,
     "Excluida", "Probablemente casi constante en el recorte; se descarta si tiene un solo nivel."),
   d("wfo", "Oficina del NWS responsable del área", "Predictor", AL_EVENTO,
-    "Incluida (a justificar)", "Aproxima la ubicación, pero también el mecanismo de reporte; evaluar sensibilidad sin esta variable."),
+    "Excluida", "Redundancia de localización."),
   d("source", "Fuente que reportó el evento", "Predictor", AL_EVENTO,
     "Excluida", "Refleja cómo se reportó y no el fenómeno físico; puede asociarse a que el daño esté informado. Evaluar sensibilidad sin esta variable."),
   

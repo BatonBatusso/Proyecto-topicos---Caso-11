@@ -7,7 +7,7 @@ cols_predictores <- c("event_id", "episode_id", "year", "event_type",
                       "mag_origen", "magnitude",
                       "dur_min", "mes_num", "hora_inicio",
                       "state", "wfo",
-                      "begin_lat", "begin_lon")
+                      "begin_lat", "begin_lon","end_lat","end_lon")
 
 base_desarrollo <- storm_limpio %>%
   filter(year <= 2021, dano_informado) %>%
