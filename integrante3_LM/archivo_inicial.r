@@ -1,5 +1,5 @@
 source("preparacion_base_datos.R")
-
+#cambio
 # ==============================================================================
 # R/02_m1_elastic_net.R
 # PASO 1: Preprocesamiento por ventana, matrices de diseño y grilla
@@ -495,8 +495,8 @@ predicciones_desarrollo_m1 <- bind_rows(
   res_m1_log$predicciones
 ) %>%
   transmute(
-    EVENT_ID           = event_id,
-    EPISODE_ID         = episode_id,
+    event_id           = event_id,
+    episode_id         = episode_id,
     particion          = particion,
     anio_validacion    = anio_validacion,
     y_observado        = y_observado,
@@ -512,10 +512,14 @@ predicciones_desarrollo_m1 <- bind_rows(
 
 
 
-ruta_out_m1 <- "interagte3_LM/resultados/m1"
+ruta_out_m1 <- "integrante3_LM/resultados/m1"
 dir.create(ruta_out_m1, recursive = TRUE, showWarnings = FALSE)
 
 saveRDS(predicciones_desarrollo_m1, file.path(ruta_out_m1, "predicciones_desarrollo_m1.rds"))
+
+# Copia en la carpeta común del grupo, para que la versión de ahí nunca quede desactualizada
+dir.create("resultados/predicciones", recursive = TRUE, showWarnings = FALSE)
+saveRDS(predicciones_desarrollo_m1, "resultados/predicciones/predicciones_desarrollo_m1.rds")
 
 configuracion_elegida_m1 <- bind_rows(res_m1_orig$mejor_config, res_m1_log$mejor_config)
 saveRDS(configuracion_elegida_m1, file.path(ruta_out_m1, "configuracion_elegida_m1.rds"))
@@ -547,13 +551,13 @@ cat("\n3. SENSIBILIDAD 2 - DESEMPEÑO POR SUBGRUPO DE MEDICIÓN (Promedio 3 vent
 print(resultados_subgrupos_m1 %>% select(variante_respuesta, mag_origen, n_total_valid, mae_medio_usd, rmse_medio_usd))
 
 cat("\n4. VERIFICACIÓN DEL CONTRATO DE ENTREGA (predicciones_desarrollo_m1.rds):\n")
-cols_contrato <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion",
+cols_contrato <- c("event_id", "episode_id", "particion", "anio_validacion",
                    "y_observado", "y_predicho", "modelo", "variante_respuesta", "configuracion")
 cumple_cols <- identical(names(predicciones_desarrollo_m1), cols_contrato)
 cat("  - Columnas exactas según contrato:", cumple_cols, "\n")
 cat("  - Dimensiones (9967 filas x 2 variantes = 19950):", nrow(predicciones_desarrollo_m1), "filas x", ncol(predicciones_desarrollo_m1), "cols\n")
-cat("  - Duplicados por (EVENT_ID, particion, variante_respuesta):",
-    sum(duplicated(predicciones_desarrollo_m1[, c("EVENT_ID", "particion", "variante_respuesta")])), "\n")
+cat("  - Duplicados por (event_id, particion, variante_respuesta):",
+    sum(duplicated(predicciones_desarrollo_m1[, c("event_id", "particion", "variante_respuesta")])), "\n")
 cat("  - Archivos guardados en resultados/m1/:\n")
 print(list.files("interagte3_LM/resultados/m1"))
 cat("===============================================================\n")
@@ -620,8 +624,8 @@ ajustar_predecir_m1_final <- function(df_desarrollo,
   
   # h. Devolver predicciones con formato estandarizado
   tibble(
-    EVENT_ID           = nuevos_clean$event_id,
-    EPISODE_ID         = nuevos_clean$episode_id,
+    event_id           = nuevos_clean$event_id,
+    episode_id         = nuevos_clean$episode_id,
     anio               = nuevos_clean$year,
     y_predicho         = pred_usd,
     modelo             = "M1_elastic_net",
@@ -638,8 +642,8 @@ ajustar_predecir_m1_final <- function(df_desarrollo,
 # 2. Guardar control de filas comunes de validación en interagte3_LM
 control_filas_m1 <- predicciones_desarrollo_m1 %>%
   filter(variante_respuesta == "log1p") %>%
-  select(particion, anio_validacion, EVENT_ID, EPISODE_ID) %>%
-  arrange(particion, EVENT_ID)
+  select(particion, anio_validacion, event_id, episode_id) %>%
+  arrange(particion, event_id)
 
 saveRDS(control_filas_m1, file.path(ruta_out_m1, "control_filas_validacion_m1.rds"))
 
@@ -810,7 +814,7 @@ if (!exists("control_filas_m1")) {
   control_filas_m1 <- readRDS(file.path(ruta_out_m1, "control_filas_validacion_m1.rds"))
 }
 
-# 1. Resumen estructural de las 3 ventanas y preservación de EPISODE_ID (Sección 3)
+# 1. Resumen estructural de las 3 ventanas y preservación de episode_id (Sección 3)
 resumen_ventanas_diseno <- bind_rows(lapply(names(ventanas), function(id_v) {
   tr <- ventanas[[id_v]]$train
   va <- ventanas[[id_v]]$valid
@@ -854,8 +858,8 @@ preds_referencias <- bind_rows(lapply(names(ventanas), function(id_v) {
   
   bind_rows(
     tibble(
-      EVENT_ID           = va$event_id,
-      EPISODE_ID         = va$episode_id,
+      event_id           = va$event_id,
+      episode_id         = va$episode_id,
       particion          = id_v,
       anio_validacion    = va$year,
       y_observado        = va$dano_usd,
@@ -865,8 +869,8 @@ preds_referencias <- bind_rows(lapply(names(ventanas), function(id_v) {
       configuracion      = "constante_0_usd"
     ),
     tibble(
-      EVENT_ID           = va$event_id,
-      EPISODE_ID         = va$episode_id,
+      event_id           = va$event_id,
+      episode_id         = va$episode_id,
       particion          = id_v,
       anio_validacion    = va$year,
       y_observado        = va$dano_usd,
@@ -876,8 +880,8 @@ preds_referencias <- bind_rows(lapply(names(ventanas), function(id_v) {
       configuracion      = sprintf("mediana_global ($%.0f)", med_global)
     ),
     tibble(
-      EVENT_ID           = va$event_id,
-      EPISODE_ID         = va$episode_id,
+      event_id           = va$event_id,
+      episode_id         = va$episode_id,
       particion          = id_v,
       anio_validacion    = va$year,
       y_observado        = va$dano_usd,
@@ -892,14 +896,14 @@ preds_referencias <- bind_rows(lapply(names(ventanas), function(id_v) {
 # 3. Unir M1 (original y log1p) con las Referencias sobre las mismas 9,967 filas
 mapa_subgrupos <- bind_rows(lapply(names(ventanas), function(id_v) {
   ventanas[[id_v]]$valid %>%
-    transmute(particion = id_v, EVENT_ID = event_id, mag_origen = mag_origen, event_type = event_type)
+    transmute(particion = id_v, event_id = event_id, mag_origen = mag_origen, event_type = event_type)
 }))
 
 comparacion_completa <- bind_rows(
   preds_referencias,
   predicciones_desarrollo_m1
 ) %>%
-  left_join(mapa_subgrupos, by = c("particion", "EVENT_ID"))
+  left_join(mapa_subgrupos, by = c("particion", "event_id"))
 
 # a. Resumen global e inter-ventana (V1, V2, V3)
 resumen_m1_vs_ref_ventana <- comparacion_completa %>%
@@ -955,34 +959,66 @@ subgrupos_m1_vs_ref <- comparacion_completa %>%
 
 # 4. Función verificadora de filas comunes entre los 4 procedimientos (Resp. #18)
 verificar_filas_comunes_modelos <- function(control_base, archivos_rds) {
-  ref_ord <- control_base %>%
-    arrange(particion, EVENT_ID) %>%
-    select(particion, anio_validacion, EVENT_ID, EPISODE_ID)
+  cols_req <- c("event_id", "episode_id", "particion", "anio_validacion",
+                "y_observado", "y_predicho", "modelo", "variante_respuesta", "configuracion")
+  
+  # Clave de cada fila de validación como texto, para comparar sin importar si los
+  # ids o el año vienen guardados como número o como texto en cada archivo
+  # (un id guardado como texto "1e+06" también se reconoce como 1000000)
+  a_texto <- function(x) {
+    num <- suppressWarnings(as.numeric(as.character(x)))
+    if (all(is.na(num) == is.na(x))) sprintf("%.0f", num) else as.character(x)
+  }
+  clave_filas <- function(particion, anio_validacion, event_id, episode_id) {
+    sort(paste(a_texto(particion), a_texto(anio_validacion),
+               a_texto(event_id), a_texto(episode_id), sep = "|"))
+  }
+  ref_claves <- with(control_base, clave_filas(particion, anio_validacion, event_id, episode_id))
   
   bind_rows(lapply(archivos_rds, function(ruta) {
     if (!file.exists(ruta)) {
-      return(tibble(archivo = basename(ruta), existe = FALSE))
+      return(tibble(archivo = basename(ruta), ruta = ruta, existe = FALSE))
     }
     df <- readRDS(ruta)
-    cols_req <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion",
-                  "y_observado", "y_predicho", "modelo", "variante_respuesta", "configuracion")
-    tiene_cols <- all(cols_req %in% names(df))
+    
+    # Los ids se aceptan en mayúsculas o minúsculas y se dejan en minúsculas
+    for (id in c("event_id", "episode_id")) {
+      pos <- which(tolower(names(df)) == id)
+      if (!id %in% names(df) && length(pos) == 1) names(df)[pos] <- id
+    }
+    
+    # Un archivo al que le falten columnas del contrato se informa en la tabla
+    # en vez de detener todo el script
+    faltantes <- setdiff(cols_req, names(df))
+    if (length(faltantes) > 0) {
+      warning(sprintf("'%s' no cumple el contrato de entrega. Faltan: %s",
+                      ruta, paste(faltantes, collapse = ", ")), call. = FALSE)
+      return(tibble(
+        modelo            = if ("modelo" %in% names(df)) paste(unique(df$modelo), collapse = ", ") else NA_character_,
+        archivo           = basename(ruta),
+        ruta              = ruta,
+        existe            = TRUE,
+        columnas_contrato = FALSE,
+        cols_faltantes    = paste(faltantes, collapse = ", "),
+        n_filas           = nrow(df)
+      ))
+    }
     
     df %>%
+      mutate(modelo = as.character(modelo), variante_respuesta = as.character(variante_respuesta)) %>%
       group_by(modelo, variante_respuesta) %>%
       summarise(
         archivo             = basename(ruta),
+        ruta                = ruta,
         existe              = TRUE,
-        columnas_contrato   = tiene_cols,
+        columnas_contrato   = TRUE,
+        cols_faltantes      = NA_character_,
         n_filas             = n(),
         n_V1                = sum(particion == "V1"),
         n_V2                = sum(particion == "V2"),
         n_V3                = sum(particion == "V3"),
-        ids_exactos_9967    = identical(
-          tibble(particion = particion, anio_validacion = anio_validacion,
-                 EVENT_ID = EVENT_ID, EPISODE_ID = EPISODE_ID) %>% arrange(particion, EVENT_ID),
-          ref_ord
-        ),
+        ids_exactos_9967    = identical(clave_filas(particion, anio_validacion, event_id, episode_id),
+                                        ref_claves),
         sin_na_pred         = sum(is.na(y_predicho)) == 0,
         sin_negativos_pred  = sum(y_predicho < 0, na.rm = TRUE) == 0,
         .groups = "drop"
@@ -1010,7 +1046,7 @@ write_csv(tabla_control_filas,     file.path(ruta_out_m1, "control_integridad_fi
 # ==============================================================================
 cat("\n==================== AUDITORIA PASO 5 (M1) ====================\n")
 
-cat("1. DISEÑO TEMPORAL Y PRESERVACIÓN DE EPISODE_ID (Sección 3):\n")
+cat("1. DISEÑO TEMPORAL Y PRESERVACIÓN DE episode_id (Sección 3):\n")
 print(resumen_ventanas_diseno %>%
         select(particion, anios_train, anio_valid, n_eventos_train, n_episodios_train,
                n_eventos_valid, n_episodios_valid, episodios_cruzados,

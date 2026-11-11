@@ -1,4 +1,4 @@
-"EVENT_ID","EPISODE_ID","particion","anio_validacion","modelo","variante_respuesta","uso_wfo","configuracion","cp","maxdepth","minbucket","y_observado","y_predicho","error_absoluto"
+"event_id","episode_id","particion","anio_validacion","modelo","variante_respuesta","uso_wfo","configuracion","cp","maxdepth","minbucket","y_observado","y_predicho","error_absoluto"
 "793447","132600","V1",2019,"M2_arbol","original","sin_wfo","C04",0.01,4,10,3000,5670.87394957983,2670.87394957983
 "793448","132600","V1",2019,"M2_arbol","original","sin_wfo","C04",0.01,4,10,15000,5670.87394957983,9329.12605042017
 "793476","132609","V1",2019,"M2_arbol","original","sin_wfo","C04",0.01,4,10,0,5670.87394957983,5670.87394957983

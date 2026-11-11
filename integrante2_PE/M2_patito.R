@@ -87,16 +87,16 @@ normalizar_identificadores <- function(datos, nombre_objeto) {
     stop("Hay mas de una columna equivalente a EPISODE_ID en ", nombre_objeto, ".")
   }
 
-  names(datos)[posicion_evento] <- "EVENT_ID"
-  names(datos)[posicion_episodio] <- "EPISODE_ID"
+  names(datos)[posicion_evento] <- "event_id"
+  names(datos)[posicion_episodio] <- "episode_id"
   datos
 }
 
 base_desarrollo <- adaptar_nombres(base_desarrollo)
 base_desarrollo <- normalizar_identificadores(base_desarrollo,
                                               "base_desarrollo")
-base_desarrollo$EVENT_ID <- as.character(base_desarrollo$EVENT_ID)
-base_desarrollo$EPISODE_ID <- as.character(base_desarrollo$EPISODE_ID)
+base_desarrollo$event_id <- as.character(base_desarrollo$event_id)
+base_desarrollo$episode_id <- as.character(base_desarrollo$episode_id)
 
 # Si las particiones no traen los ID, las armo por año y episodio.
 nombres_particiones <- toupper(names(particiones))
@@ -106,8 +106,8 @@ particiones_tienen_ids <- all(
 
 if (particiones_tienen_ids) {
   particiones <- normalizar_identificadores(particiones, "particiones")
-  particiones$EVENT_ID <- as.character(particiones$EVENT_ID)
-  particiones$EPISODE_ID <- as.character(particiones$EPISODE_ID)
+  particiones$event_id <- as.character(particiones$event_id)
+  particiones$episode_id <- as.character(particiones$episode_id)
   cat("\nSE USARON LAS PARTICIONES POR EVENTO DEL PAQUETE COMUN.\n")
 } else {
   if (!"year" %in% names(base_desarrollo)) {
@@ -119,7 +119,7 @@ if (particiones_tienen_ids) {
 
   # Un episodio siempre queda en un solo grupo, aunque pase de un año a otro.
   base_para_particiones <- base_desarrollo %>%
-    group_by(EPISODE_ID) %>%
+    group_by(episode_id) %>%
     mutate(year_episode = min(as.integer(year))) %>%
     ungroup()
 
@@ -127,8 +127,8 @@ if (particiones_tienen_ids) {
     train <- datos %>%
       filter(year_episode %in% anios_train) %>%
       transmute(
-        EVENT_ID,
-        EPISODE_ID,
+        event_id,
+        episode_id,
         year = as.integer(year),
         particion = nombre,
         rol = "train"
@@ -137,8 +137,8 @@ if (particiones_tienen_ids) {
     valid <- datos %>%
       filter(year_episode == anio_valid) %>%
       transmute(
-        EVENT_ID,
-        EPISODE_ID,
+        event_id,
+        episode_id,
         year = as.integer(year),
         particion = nombre,
         rol = "valid"
@@ -153,8 +153,8 @@ if (particiones_tienen_ids) {
     crear_ventana(base_para_particiones, "V3", 2018:2020, 2021)
   )
 
-  particiones$EVENT_ID <- as.character(particiones$EVENT_ID)
-  particiones$EPISODE_ID <- as.character(particiones$EPISODE_ID)
+  particiones$event_id <- as.character(particiones$event_id)
+  particiones$episode_id <- as.character(particiones$episode_id)
 
   cat(
     "\nEL ARCHIVO DE PARTICIONES NO TENIA IDENTIFICADORES. ",
@@ -169,13 +169,13 @@ variables_modelo <- c(
   "hora_inicio", "state", "wfo", "begin_lat", "begin_lon"
 )
 
-necesarias <- c("EVENT_ID", "EPISODE_ID", "year", "dano_usd", variables_modelo)
+necesarias <- c("event_id", "episode_id", "year", "dano_usd", variables_modelo)
 faltantes <- setdiff(necesarias, names(base_desarrollo))
 if (length(faltantes) > 0) {
   stop("Faltan columnas en la base comun: ", paste(faltantes, collapse = ", "))
 }
-if (anyDuplicated(base_desarrollo$EVENT_ID)) stop("EVENT_ID esta duplicado.")
-if (anyNA(base_desarrollo$EVENT_ID) || anyNA(base_desarrollo$EPISODE_ID)) {
+if (anyDuplicated(base_desarrollo$event_id)) stop("event_id esta duplicado.")
+if (anyNA(base_desarrollo$event_id) || anyNA(base_desarrollo$episode_id)) {
   stop("Faltan identificadores de eventos o episodios.")
 }
 if (any(!base_desarrollo$year %in% 2018:2021)) {
@@ -199,20 +199,20 @@ for (i in 1:3) {
   nombre <- paste0("V", i)
   p <- particiones %>% filter(particion == nombre)
   train_list[[i]] <- base_desarrollo %>%
-    filter(EVENT_ID %in% p$EVENT_ID[p$rol == "train"])
+    filter(event_id %in% p$event_id[p$rol == "train"])
   valid_list[[i]] <- base_desarrollo %>%
-    filter(EVENT_ID %in% p$EVENT_ID[p$rol == "valid"])
+    filter(event_id %in% p$event_id[p$rol == "valid"])
 
   if (nrow(train_list[[i]]) == 0 || nrow(valid_list[[i]]) == 0) {
     stop("Faltan eventos en ", nombre)
   }
-  if (anyDuplicated(p$EVENT_ID) ||
+  if (anyDuplicated(p$event_id) ||
       nrow(train_list[[i]]) != sum(p$rol == "train") ||
       nrow(valid_list[[i]]) != sum(p$rol == "valid")) {
     stop("Las particiones no coinciden con la base en ", nombre)
   }
-  if (length(intersect(train_list[[i]]$EPISODE_ID,
-                       valid_list[[i]]$EPISODE_ID)) > 0) {
+  if (length(intersect(train_list[[i]]$episode_id,
+                       valid_list[[i]]$episode_id)) > 0) {
     stop("Hay episodios compartidos en ", nombre)
   }
 }
@@ -326,7 +326,7 @@ for (con_wfo in c(TRUE, FALSE)) {
           hojas = sum(arbol$frame$var == "<leaf>"), segundos = segundos
         )
         predicciones[[k]] <- data.frame(
-          EVENT_ID = valid$EVENT_ID, EPISODE_ID = valid$EPISODE_ID,
+          event_id = valid$event_id, episode_id = valid$episode_id,
           particion = paste0("V", i), anio_validacion = c(2019, 2020, 2021)[i],
           y_observado = valid$dano_usd, y_predicho = pred,
           modelo = "M2_arbol", variante_respuesta = variante,
@@ -402,7 +402,7 @@ print(mejor)
 predicciones_m2_final <- predicciones_elegidas %>%
   filter(uso_wfo == mejor$uso_wfo,
          variante_respuesta == mejor$variante_respuesta) %>%
-  select(EVENT_ID, EPISODE_ID, particion, anio_validacion, modelo,
+  select(event_id, episode_id, particion, anio_validacion, modelo,
          variante_respuesta, y_observado, y_predicho) %>%
   mutate(error_absoluto = abs(y_observado - y_predicho))
 
@@ -419,7 +419,7 @@ predicciones_m2_ambas <- predicciones_elegidas %>%
   mutate(error_absoluto = abs(y_observado - y_predicho))
 
 # Cada evento debe tener una prediccion original y otra log1p.
-claves_m2 <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion")
+claves_m2 <- c("event_id", "episode_id", "particion", "anio_validacion")
 n_validaciones_m2 <- sum(sapply(valid_list, nrow))
 
 if (!identical(sort(unique(predicciones_m2_ambas$variante_respuesta)),
@@ -452,7 +452,7 @@ print(tabla_ventanas_m2 %>% left_join(referencias, by = "particion"), n = Inf)
 # Errores por granizo, viento medido y viento estimado.
 resultados_grupos <- predicciones_elegidas %>%
   filter(uso_wfo == mejor$uso_wfo) %>%
-  left_join(base_desarrollo %>% select(EVENT_ID, mag_origen), by = "EVENT_ID") %>%
+  left_join(base_desarrollo %>% select(event_id, mag_origen), by = "event_id") %>%
   group_by(variante_respuesta, particion, mag_origen) %>%
   summarise(n = n(), MAE = mean(abs(y_observado - y_predicho)),
             RMSE = sqrt(mean((y_observado - y_predicho)^2)), .groups = "drop")
@@ -574,7 +574,7 @@ if (integrar_ahora) {
   }
   # Para M2 comparo las dos respuestas.
   m2_para_comparar <- predicciones_m2_ambas
-  claves <- c("EVENT_ID", "EPISODE_ID", "particion", "anio_validacion")
+  claves <- c("event_id", "episode_id", "particion", "anio_validacion")
   columnas <- c(claves, "modelo", "variante_respuesta", "y_observado", "y_predicho")
   lista_modelos <- list(pred_referencia, pred_m1, m2_para_comparar, pred_m3)
   for (i in seq_along(lista_modelos)) {
@@ -618,8 +618,8 @@ if (integrar_ahora) {
     stop("Hay predicciones faltantes, infinitas o negativas.")
   }
   respuestas <- base_desarrollo %>%
-    transmute(EVENT_ID, respuesta = dano_usd)
-  todas <- todas %>% left_join(respuestas, by = "EVENT_ID")
+    transmute(event_id, respuesta = dano_usd)
+  todas <- todas %>% left_join(respuestas, by = "event_id")
   if (anyNA(todas$respuesta) ||
       any(abs(todas$respuesta - todas$y_observado) > 0.001)) {
     stop("Las respuestas observadas no coinciden entre modelos.")
@@ -648,7 +648,7 @@ if (integrar_ahora) {
   print(estabilidad, n = Inf)
 
   comparacion_grupos <- todas %>%
-    left_join(base_desarrollo %>% select(EVENT_ID, mag_origen), by = "EVENT_ID") %>%
+    left_join(base_desarrollo %>% select(event_id, mag_origen), by = "event_id") %>%
     group_by(modelo, variante_respuesta, mag_origen) %>%
     summarise(n = n(), MAE = mean(abs(y_observado - y_predicho)),
               .groups = "drop")
@@ -670,11 +670,11 @@ if (evaluar_reserva) {
   }
   base_reserva <- adaptar_nombres(base_reserva)
   base_reserva <- normalizar_identificadores(base_reserva, "base_reserva")
-  base_reserva$EVENT_ID <- as.character(base_reserva$EVENT_ID)
-  base_reserva$EPISODE_ID <- as.character(base_reserva$EPISODE_ID)
+  base_reserva$event_id <- as.character(base_reserva$event_id)
+  base_reserva$episode_id <- as.character(base_reserva$episode_id)
   predicciones_reserva_m2 <- data.frame(
-    EVENT_ID = base_reserva$EVENT_ID,
-    EPISODE_ID = base_reserva$EPISODE_ID,
+    event_id = base_reserva$event_id,
+    episode_id = base_reserva$episode_id,
     modelo = "M2_arbol", variante_respuesta = mejor$variante_respuesta,
     y_predicho = predecir_m2(base_reserva)
   )
@@ -703,8 +703,8 @@ saveRDS(mejor, file.path(carpeta_resultados, "configuracion_elegida_m2.rds"))
 # Las predicciones estan en dolares, no en escala logaritmica.
 predicciones_exportar_m2 <- predicciones_m2_ambas %>%
   select(
-    EVENT_ID,
-    EPISODE_ID,
+    event_id,
+    episode_id,
     particion,
     anio_validacion,
     modelo,
@@ -901,7 +901,7 @@ stopifnot(!anyNA(predicciones_revisar$y_observado),
           all(predicciones_revisar$y_predicho >= 0))
 
 stopifnot(!anyDuplicated(predicciones_revisar[
-  c("EVENT_ID", "particion", "variante_respuesta")
+  c("event_id", "particion", "variante_respuesta")
 ]))
 stopifnot(all(predicciones_revisar$uso_wfo == configuracion_revisar$uso_wfo))
 
